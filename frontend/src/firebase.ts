@@ -2,19 +2,17 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 
 // Configuração do Firebase
-// Se as variáveis de ambiente VITE_FIREBASE_* não forem informadas, o sistema
-// assumirá o project_id 'skills-agents' como padrão de fallback.
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || `${import.meta.env.VITE_FIREBASE_PROJECT_ID || 'skills-agents'}.firebaseapp.com`,
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyAjDaTF7woraqQeH9lBGQwp01MP9J4BYLg",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "skills-agents.firebaseapp.com",
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "skills-agents",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || `${import.meta.env.VITE_FIREBASE_PROJECT_ID || 'skills-agents'}.firebasestorage.app`,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || ""
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "skills-agents.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "985778583454",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:985778583454:web:4c6c5254b83984b979088f"
 };
 
-// Verifica se deve rodar no modo de autenticação simulada (modo local puro)
-export const isAuthEnabled = import.meta.env.VITE_USE_FIREBASE === 'true';
+// Ativa a autenticação real por padrão, a menos que seja explicitamente desativada via env
+export const isAuthEnabled = import.meta.env.VITE_USE_FIREBASE !== 'false';
 
 let authInstance: any = null;
 let googleProviderInstance: any = null;
