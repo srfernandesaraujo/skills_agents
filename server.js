@@ -864,7 +864,7 @@ app.get('/api/skills/:name/export', async (req, res) => {
       const details = await storage.getSkill(name);
       // Detalhes contém a árvore de arquivos, mas para exportar vamos ler todos os arquivos de texto e binários
       // Podemos consultar a coleção de arquivos diretamente usando a referência do Firestore do storage
-      const skillsCollection = admin.firestore().collection('skills').doc(name).collection('files');
+      const skillsCollection = storage.getDb().collection('skills').doc(name).collection('files');
       const snapshot = await skillsCollection.get();
       
       for (const doc of snapshot.docs) {
