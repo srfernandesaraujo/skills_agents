@@ -40,6 +40,7 @@ interface FileTreeProps {
   onDeleteSkill: (skillName: string) => void;
   onExportSkill: (skillName: string) => void;
   onUploadFiles: (skillName: string, folder: 'dados' | 'assets', files: FileList) => void;
+  isAdmin: boolean;
 }
 
 export const FileTree: React.FC<FileTreeProps> = ({
@@ -54,6 +55,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
   onDeleteSkill,
   onExportSkill,
   onUploadFiles,
+  isAdmin,
 }) => {
   const [openDirs, setOpenDirs] = useState<Record<string, boolean>>({
     'dados': true,
@@ -217,19 +219,32 @@ export const FileTree: React.FC<FileTreeProps> = ({
     );
   };
 
+  const skillLimitReached = !isAdmin && skills.length >= 2;
+
   return (
     <div className="file-tree-container">
       {/* Botões do Topo */}
       <div className="tree-header">
         <h3>Minhas AI Skills</h3>
-        <button 
-          className="btn btn-primary btn-sm-custom"
-          onClick={onOpenCreateModal}
-        >
-          <Sparkles size={14} />
-          Nova Skill
-        </button>
+        {!skillLimitReached ? (
+          <button 
+            className="btn btn-primary btn-sm-custom"
+            onClick={onOpenCreateModal}
+          >
+            <Sparkles size={14} />
+            Nova Skill
+          </button>
+        ) : (
+          <span className="skill-limit-badge" title="Limite de 2 Skills atingido para usuários gratuitos">
+            🔒 Limite atingido
+          </span>
+        )}
       </div>
+      {skillLimitReached && (
+        <div className="skill-limit-notice">
+          Você atingiu o limite de <strong>2 Skills</strong> do plano gratuito.
+        </div>
+      )}
 
       {/* Lista de Skills */}
       <div className="skills-list-section">
@@ -570,6 +585,23 @@ export const FileTree: React.FC<FileTreeProps> = ({
         .btn-secondary-mini {
           background: var(--bg-tertiary);
           color: var(--text-secondary);
+        }
+        .skill-limit-badge {
+          font-size: 0.72rem;
+          color: #f59e0b;
+          background: rgba(245, 158, 11, 0.1);
+          border: 1px solid rgba(245, 158, 11, 0.25);
+          border-radius: 20px;
+          padding: 3px 10px;
+          white-space: nowrap;
+        }
+        .skill-limit-notice {
+          font-size: 0.78rem;
+          color: #f59e0b;
+          background: rgba(245, 158, 11, 0.08);
+          border-bottom: 1px solid rgba(245, 158, 11, 0.15);
+          padding: 8px 16px;
+          line-height: 1.4;
         }
       `}</style>
     </div>

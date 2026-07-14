@@ -1,6 +1,7 @@
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
+import { getAuth } from 'firebase-admin/auth';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -16,6 +17,9 @@ const __dirname = path.dirname(__filename);
 
 const SKILLS_DIR = path.join(__dirname, 'skills');
 const TEMPLATES_DIR = path.join(__dirname, 'templates');
+
+const ADMIN_EMAIL = 'srfernandesaraujo@gmail.com';
+const SKILL_LIMIT_USERS = 2; // máximo de skills para usuários não-admin
 
 // Garante que os diretórios locais existam para o modo local
 if (!fs.existsSync(SKILLS_DIR)) {
@@ -72,6 +76,48 @@ if (useFirebase) {
     console.error('Failed to initialize Firebase. Falling back to local storage:', err);
   }
 }
+
+/**
+ * Verifica o token de autenticação do Firebase.
+ * Em modo local (USE_FIREBASE=false), retorna um usuário admin fictício sem validação.
+ */
+export async function verifyIdToken(idToken) {
+  if (!useFirebase || !idToken) {
+    // Modo local: se não há autenticação Firebase ativa, assume usuário admin
+    return { uid: 'local-admin', email: ADMIN_EMAIL, name: 'Admin Local', isAdmin: true };
+  }
+
+  try {
+    const decodedToken = await getAuth().verifyIdToken(idToken);
+    return {
+      uid: decodedToken.uid,
+      email: decodedToken.email || '',
+      name: decodedToken.name || decodedToken.email || 'Usuário',
+      isAdmin: decodedToken.email === ADMIN_EMAIL,
+    };
+  } catch (err) {
+    throw new Error('Token inválido ou expirado: ' + err.message);
+  }
+}
+
+/**
+ * Conta quantas skills um usuário criou no Firestore.
+ * Retorna 0 no modo local (sem restrição).
+ */
+export async function countUserSkills(userUid) {
+  if (!useFirebase || !db) return 0;
+  try {
+    const snapshot = await db.collection('skills')
+      .where('ownerUid', '==', userUid)
+      .count()
+      .get();
+    return snapshot.data().count || 0;
+  } catch {
+    return 0;
+  }
+}
+
+export { ADMIN_EMAIL, SKILL_LIMIT_USERS };
 
 // --- UTILS LOCAL (GIT & PATH) ---
 async function runGit(args) {
@@ -659,7 +705,7 @@ export async function deleteFile(name, filePath) {
   }
 }
 
-export async function saveSkill(name, title, description, customMarkdown = null) {
+export async function saveSkill(name, title, description, customMarkdown = null, user = null) {
   const folderName = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
 
   if (useFirebase && db) {
@@ -667,6 +713,14 @@ export async function saveSkill(name, title, description, customMarkdown = null)
     const doc = await skillRef.get();
     if (doc.exists) {
       throw new Error('Já existe uma Skill com esta pasta/nome no Firebase');
+    }
+
+    // Verificar limite de Skills para usuários não-admin
+    if (user && !user.isAdmin) {
+      const count = await countUserSkills(user.uid);
+      if (count >= SKILL_LIMIT_USERS) {
+        throw new Error(`Limite de ${SKILL_LIMIT_USERS} Skills excedido. Usuários gratuitos podem criar no máximo ${SKILL_LIMIT_USERS} Skills.`);
+      }
     }
 
     const accepts_files = /médic|clin|saúd|anamne|farmac|pacient/i.test(title + ' ' + description);
@@ -680,7 +734,9 @@ export async function saveSkill(name, title, description, customMarkdown = null)
       trigger: null,
       cron_expression: null,
       webhook_endpoint: null,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      ownerUid: user?.uid || null,
+      ownerEmail: user?.email || null,
     };
     await skillRef.set(metadata);
 

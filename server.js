@@ -24,6 +24,28 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+// --- MIDDLEWARE DE AUTENTICAÇÃO ---
+const authMiddleware = async (req, res, next) => {
+  try {
+    const authHeader = req.headers['authorization'] || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    req.user = await storage.verifyIdToken(token);
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'Não autorizado: ' + err.message });
+  }
+};
+
+// Middleware que só permite o admin passar
+const adminMiddleware = (req, res, next) => {
+  if (!req.user || !req.user.isAdmin) {
+    return res.status(403).json({ error: 'Acesso negado. Apenas administradores podem executar esta ação.' });
+  }
+  next();
+};
+
+
+
 // Diretório base onde as Skills serão armazenadas
 const SKILLS_DIR = path.join(__dirname, 'skills');
 const TEMPLATES_DIR = path.join(__dirname, 'templates');
@@ -554,7 +576,7 @@ O motor lista todos os scripts \`.py\` nesta pasta. O Agente invocará o script 
 }
 
 // 4. Criar uma nova Skill manualmente
-app.post('/api/skills', async (req, res) => {
+app.post('/api/skills', authMiddleware, async (req, res) => {
   const { name, title, description } = req.body;
 
   if (!name) {
@@ -562,7 +584,7 @@ app.post('/api/skills', async (req, res) => {
   }
 
   try {
-    const result = await storage.saveSkill(name, title, description);
+    const result = await storage.saveSkill(name, title, description, null, req.user);
     res.status(201).json({
       name: result.folderName,
       title: result.title,
@@ -570,12 +592,13 @@ app.post('/api/skills', async (req, res) => {
       message: 'Skill criada com sucesso!'
     });
   } catch (error) {
-    res.status(500).json({ error: 'Erro ao criar Skill: ' + error.message });
+    const statusCode = error.message.includes('Limite') ? 403 : 500;
+    res.status(statusCode).json({ error: 'Erro ao criar Skill: ' + error.message });
   }
 });
 
 // 4b. Rota para Geração de Skill Avançada por IA (Gemini)
-app.post('/api/skills/generate', async (req, res) => {
+app.post('/api/skills/generate', authMiddleware, async (req, res) => {
   const { name, title, role, objective, targetAudience, needsFiles, needsTools, apiKey } = req.body;
 
   if (!name) {
@@ -708,8 +731,8 @@ REGRAS CRÍTICAS:
       }
     }
 
-    // Cria a Skill no storage
-    await storage.saveSkill(folderName, formattedTitle, formattedDesc, parsedResult.skillMd || '');
+    // Cria a Skill no storage (passando o usuário autenticado para controle de cota)
+    await storage.saveSkill(folderName, formattedTitle, formattedDesc, parsedResult.skillMd || '', req.user);
 
     // Salva os arquivos guia LEIA-ME.md no storage
     const readmes = parsedResult.readmes || {};
@@ -734,7 +757,8 @@ REGRAS CRÍTICAS:
 
   } catch (error) {
     console.error('Erro ao gerar Skill via IA:', error);
-    res.status(500).json({ error: 'Erro ao gerar Skill via IA: ' + error.message });
+    const statusCode = error.message.includes('Limite') ? 403 : 500;
+    res.status(statusCode).json({ error: 'Erro ao gerar Skill via IA: ' + error.message });
   }
 });
 

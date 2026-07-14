@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { 
   FolderGit2, Sliders, MessageSquare, History, 
-  BookOpen, Compass, Server, Sparkles, Brain, Zap
+  BookOpen, Compass, Server, Sparkles, Brain, Zap, LogOut, User
 } from 'lucide-react';
 import { FileTree } from './components/FileTree';
 import type { SkillSummary, SkillDetail } from './components/FileTree';
@@ -16,10 +16,25 @@ import { MemoryManager } from './components/MemoryManager';
 import { AutomationsDashboard } from './components/AutomationsDashboard';
 import { TemplatesGallery } from './components/TemplatesGallery';
 import { CreateSkillModal } from './components/CreateSkillModal';
+import { LoginPage } from './components/LoginPage';
+import { auth, isAuthEnabled } from './firebase';
+import { signOut, type User as FirebaseUser } from 'firebase/auth';
 
-
+interface UserProfile {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoURL: string;
+  idToken: string;
+}
 
 function App() {
+  // Estado de Autenticação do Usuário
+  const [user, setUser] = useState<UserProfile | null>(() => {
+    const saved = localStorage.getItem('user_profile');
+    return saved ? JSON.parse(saved) : null;
+  });
+
   // Configurações do Sistema
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || (import.meta.env.VITE_GEMINI_API_KEY as string) || '');
   const [backendUrl, setBackendUrl] = useState(() => localStorage.getItem('backend_url') || (import.meta.env.VITE_API_URL as string) || 'http://localhost:3001');
@@ -54,21 +69,70 @@ function App() {
   // Trigger para recarregar histórico Git
   const [gitRefreshTrigger, setGitRefreshTrigger] = useState(0);
 
-  // Inicialização: carrega a lista de skills
+  // Monitoramento do estado de login via Firebase Auth
   useEffect(() => {
-    loadSkills();
-  }, [backendUrl]);
+    if (!isAuthEnabled || !auth) return;
+    const unsubscribe = auth.onAuthStateChanged(async (firebaseUser: FirebaseUser | null) => {
+      if (firebaseUser) {
+        const idToken = await firebaseUser.getIdToken();
+        const profile = {
+          uid: firebaseUser.uid,
+          email: firebaseUser.email || '',
+          displayName: firebaseUser.displayName || 'Usuário',
+          photoURL: firebaseUser.photoURL || '',
+          idToken,
+        };
+        setUser(profile);
+        localStorage.setItem('user_profile', JSON.stringify(profile));
+      } else {
+        setUser(null);
+        localStorage.removeItem('user_profile');
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Inicialização: carrega a lista de skills somente se o usuário estiver autenticado (ou se a autenticação estiver desativada)
+  useEffect(() => {
+    if (!isAuthEnabled || user) {
+      loadSkills();
+    }
+  }, [backendUrl, user?.idToken]);
 
   const loadSkills = async () => {
     try {
       const response = await fetch(`${backendUrl}/api/skills`);
+      if (response.status === 401) {
+        // Token inválido ou expirado
+        if (isAuthEnabled) handleLogout();
+        return;
+      }
       if (!response.ok) throw new Error('Não foi possível se conectar ao servidor');
       const data = await response.json();
       setSkills(data);
     } catch (error) {
       console.error('Erro ao conectar ao backend:', error);
-      // Se der erro, tenta reconectar se trocar de URL
     }
+  };
+
+  const handleLogout = async () => {
+    if (isAuthEnabled && auth) {
+      try {
+        await signOut(auth);
+      } catch (e) {
+        console.error("Erro ao deslogar:", e);
+      }
+    }
+    setUser(null);
+    localStorage.removeItem('user_profile');
+    setSkills([]);
+    setSelectedSkill(null);
+    setSelectedFile(null);
+  };
+
+  const handleLoginSuccess = (userProfile: UserProfile) => {
+    setUser(userProfile);
+    localStorage.setItem('user_profile', JSON.stringify(userProfile));
   };
 
   // Carrega os detalhes de uma Skill (árvore de arquivos)
@@ -423,6 +487,10 @@ function App() {
     alert('Configurações salvas e aplicadas!');
   };
 
+  if (!user) {
+    return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+  }
+
   return (
     <div className="app-wrapper">
       {/* Barra Superior de Navegação */}
@@ -478,9 +546,26 @@ function App() {
             <Server size={14} className="text-green" />
             <span>Servidor Conectado</span>
           </div>
-          <button className="btn btn-secondary btn-icon-only" onClick={() => setIsSettingsOpen(true)} title="Configurações">
-            <Sliders size={16} />
-          </button>
+          
+          {user.email === 'srfernandesaraujo@gmail.com' && (
+            <button className="btn btn-secondary btn-icon-only" onClick={() => setIsSettingsOpen(true)} title="Configurações">
+              <Sliders size={16} />
+            </button>
+          )}
+
+          <div className="user-profile-widget" title={`${user.displayName} (${user.email})`}>
+            {user.photoURL ? (
+              <img src={user.photoURL} alt={user.displayName} className="user-avatar" />
+            ) : (
+              <div className="user-avatar-placeholder">
+                <User size={14} />
+              </div>
+            )}
+            <span className="user-name-tooltip">{user.displayName}</span>
+            <button className="btn-logout" onClick={handleLogout} title="Sair do Sistema">
+              <LogOut size={14} />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -502,6 +587,7 @@ function App() {
                 onDeleteSkill={handleDeleteSkill}
                 onExportSkill={handleExportSkill}
                 onUploadFiles={handleUploadFiles}
+                isAdmin={user?.email === 'srfernandesaraujo@gmail.com'}
               />
             </aside>
 
@@ -920,6 +1006,60 @@ function App() {
         .central-tab-body {
           flex: 1;
           overflow: hidden;
+        }
+
+        /* Estilos do Widget de Perfil de Usuário */
+        .user-profile-widget {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          background: rgba(255, 255, 255, 0.05);
+          border: 1px solid var(--border-color);
+          border-radius: 20px;
+          padding: 3px 12px 3px 3px;
+          position: relative;
+        }
+        .user-avatar {
+          width: 26px;
+          height: 26px;
+          border-radius: 50%;
+          object-fit: cover;
+          border: 1px solid var(--accent-purple);
+        }
+        .user-avatar-placeholder {
+          width: 26px;
+          height: 26px;
+          border-radius: 50%;
+          background: var(--bg-tertiary);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: var(--text-secondary);
+        }
+        .user-name-tooltip {
+          font-size: 0.8rem;
+          font-weight: 500;
+          color: var(--text-primary);
+          max-width: 140px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .btn-logout {
+          background: none;
+          border: none;
+          color: var(--text-secondary);
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 2px;
+          border-radius: 4px;
+          transition: all var(--transition-fast);
+        }
+        .btn-logout:hover {
+          color: #f87171;
+          background: rgba(239, 68, 68, 0.1);
         }
       `}</style>
     </div>
