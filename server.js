@@ -9,6 +9,7 @@ import { promisify } from 'util';
 import AdmZip from 'adm-zip';
 import dotenv from 'dotenv';
 import cron from 'node-cron';
+import * as storage from './storage.js';
 
 dotenv.config();
 
@@ -199,7 +200,7 @@ async function initGitRepository() {
 initGitRepository();
 
 // Middleware de upload com multer
-const storage = multer.diskStorage({
+const multerStorage = multer.diskStorage({
   destination: function (req, file, cb) {
     const { name, folder } = req.params; // folder: 'dados' ou 'assets'
     const targetDir = path.join(SKILLS_DIR, name, folder);
@@ -215,7 +216,7 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ storage: storage });
+const upload = multer({ storage: multerStorage });
 
 // --- UTILS ---
 
@@ -353,64 +354,28 @@ function parseSkillMetadata(skillName) {
 // --- API ENDPOINTS ---
 
 // 1. Listar todas as Skills
-app.get('/api/skills', (req, res) => {
+app.get('/api/skills', async (req, res) => {
   try {
-    const items = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
-    const skills = [];
-
-    for (const item of items) {
-      if (item.name === '.git' || !item.isDirectory() || item.name === '.memory') continue;
-      
-      const { title, description, accepts_files, supported_formats, trigger, cron_expression, webhook_endpoint } = parseSkillMetadata(item.name);
-      skills.push({
-        name: item.name,
-        title,
-        description,
-        path: item.name,
-        accepts_files,
-        supported_formats,
-        trigger,
-        cron_expression,
-        webhook_endpoint
-      });
-    }
-
-    res.json(skills);
+    const list = await storage.listSkills();
+    res.json(list);
   } catch (error) {
     res.status(500).json({ error: 'Erro ao listar skills: ' + error.message });
   }
 });
 
 // 2. Obter a árvore de arquivos de uma Skill
-app.get('/api/skills/:name', (req, res) => {
+app.get('/api/skills/:name', async (req, res) => {
   const { name } = req.params;
   try {
-    const skillPath = safePath(SKILLS_DIR, name);
-    if (!fs.existsSync(skillPath)) {
-      return res.status(404).json({ error: 'Skill não encontrada' });
-    }
-
-    const { title, description, accepts_files, supported_formats, trigger, cron_expression, webhook_endpoint } = parseSkillMetadata(name);
-    const files = getFileTree(skillPath);
-
-    res.json({
-      name,
-      title,
-      description,
-      accepts_files,
-      supported_formats,
-      trigger,
-      cron_expression,
-      webhook_endpoint,
-      files
-    });
+    const details = await storage.getSkill(name);
+    res.json(details);
   } catch (error) {
-    res.status(500).json({ error: 'Erro ao obter árvore de arquivos: ' + error.message });
+    res.status(500).json({ error: 'Erro ao obter dados da skill: ' + error.message });
   }
 });
 
 // 3. Obter conteúdo de um arquivo da Skill
-app.get('/api/skills/:name/file', (req, res) => {
+app.get('/api/skills/:name/file', async (req, res) => {
   const { name } = req.params;
   const filePath = req.query.path;
 
@@ -419,40 +384,15 @@ app.get('/api/skills/:name/file', (req, res) => {
   }
 
   try {
-    const fullPath = safePath(path.join(SKILLS_DIR, name), filePath);
-    if (!fs.existsSync(fullPath)) {
-      return res.status(404).json({ error: 'Arquivo não encontrado' });
-    }
-
-    const stats = fs.statSync(fullPath);
-    // Se for arquivo binário (imagem, pdf), podemos retornar metadados ou o stream
-    const ext = path.extname(fullPath).toLowerCase();
-    const isBinary = ['.png', '.jpg', '.jpeg', '.gif', '.pdf', '.zip'].includes(ext);
-
-    if (isBinary) {
-      // Para fins de preview no editor, retorna que é binário
-      return res.json({
-        path: filePath,
-        isBinary: true,
-        size: stats.size,
-        mimeType: ext === '.pdf' ? 'application/pdf' : 'image/' + ext.replace('.', '')
-      });
-    }
-
-    const content = fs.readFileSync(fullPath, 'utf8');
-    res.json({
-      path: filePath,
-      content,
-      isBinary: false,
-      size: stats.size
-    });
+    const file = await storage.getFileContent(name, filePath);
+    res.json(file);
   } catch (error) {
     res.status(500).json({ error: 'Erro ao ler arquivo: ' + error.message });
   }
 });
 
 // 3b. Rota para servir arquivos de mídia diretamente (ex: preview de imagem)
-app.get('/api/skills/:name/media', (req, res) => {
+app.get('/api/skills/:name/media', async (req, res) => {
   const { name } = req.params;
   const filePath = req.query.path;
 
@@ -461,11 +401,18 @@ app.get('/api/skills/:name/media', (req, res) => {
   }
 
   try {
-    const fullPath = safePath(path.join(SKILLS_DIR, name), filePath);
-    if (!fs.existsSync(fullPath)) {
-      return res.status(404).json({ error: 'Arquivo não encontrado' });
+    if (storage.useFirebase) {
+      const file = await storage.getFileContent(name, filePath);
+      const buffer = await storage.downloadBinaryFile(name, filePath);
+      res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
+      res.send(buffer);
+    } else {
+      const fullPath = safePath(path.join(SKILLS_DIR, name), filePath);
+      if (!fs.existsSync(fullPath)) {
+        return res.status(404).json({ error: 'Arquivo não encontrado' });
+      }
+      res.sendFile(fullPath);
     }
-    res.sendFile(fullPath);
   } catch (error) {
     res.status(500).json({ error: 'Erro ao servir arquivo de mídia: ' + error.message });
   }
@@ -614,116 +561,12 @@ app.post('/api/skills', async (req, res) => {
     return res.status(400).json({ error: 'Nome da Skill é obrigatório' });
   }
 
-  // Sanitiza nome para pasta
-  const folderName = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
-
   try {
-    const skillPath = path.join(SKILLS_DIR, folderName);
-    if (fs.existsSync(skillPath)) {
-      return res.status(400).json({ error: 'Já existe uma Skill com esta pasta/nome' });
-    }
-
-    // Cria diretórios da Skill
-    fs.mkdirSync(skillPath);
-    fs.mkdirSync(path.join(skillPath, 'dados'));
-    fs.mkdirSync(path.join(skillPath, 'assets'));
-    fs.mkdirSync(path.join(skillPath, 'tools'));
-
-    // Cria arquivos guia LEIA-ME.md
-    fs.writeFileSync(path.join(skillPath, 'dados', 'LEIA-ME.md'), getDadosReadme(title || name, description || ''));
-    fs.writeFileSync(path.join(skillPath, 'assets', 'LEIA-ME.md'), getAssetsReadme(title || name, description || ''));
-    fs.writeFileSync(path.join(skillPath, 'tools', 'LEIA-ME.md'), getToolsReadme(title || name, folderName, description || ''));
-
-    // Cria skill.md inicial
-    const formattedTitle = title || name;
-    const formattedDesc = description || 'Uma nova Skill de IA.';
-    
-    // Detecções dinâmicas para especializar o template do skill.md inicial
-    const isMedical = /médic|clin|saúd|anamne|farmac|pacient|receit|dosag|exame/i.test(formattedTitle + ' ' + formattedDesc);
-    
-    let diffTable = `| Abordagem Tradicional | Abordagem de Excelência (Esta Skill) |
-|---|---|
-| Tratamento superficial ou respostas genéricas | Análise aprofundada, conceitual e orientada a regras do playbook |
-| Falta de estruturação de entregáveis | Entrega de relatórios polidos e prontos para uso profissional |
-| Processamento reativo a e-mails ou mensagens | Orquestração orientada a metas e validação proativa |`;
-
-    let step0Questions = `1. Qual é o nível de profundidade e o público-alvo do entregável?
-2. Quais restrições de formato ou dados devem ser obrigatoriamente incluídas?
-3. Há algum arquivo de referência ou histórico a ser considerado na análise?`;
-
-    let gotchas = `- **Densidade de Informação**: Mantenha cada resposta focada, objetiva e sem rodeios.
-- **Roteiros Claros**: Sempre use formatação em Markdown bem delineado com tabelas de comparação, blocos de código e listas claras.
-- **Integração de Scripts**: Scripts Python locais localizados em \`/tools\` devem ser usados para tarefas matemáticas, integração com bases de dados e checagens lógicas.`;
-
-    if (isMedical) {
-      diffTable = `| Anamnese Clássica / Tradicional | Anamnese Farmacêutica Simulada (Esta Skill) |
-|---|---|
-| Pergunta estática em formulário sem contexto pedagógico | Simulação interativa e imersiva onde os alunos atuam como pacientes |
-| Ausência de feedback estruturado sobre erros de medicação | Avaliação do raciocínio clínico, indicação de interações graves e dosagem |
-| Foco apenas em recolher a queixa principal | Avaliação integral da farmacoterapia, adesão e estilo de vida |`;
-
-      step0Questions = `1. Qual é o caso clínico simulado da ementa (ex: Paciente com Diabetes Descompensada)?
-2. Quais são os medicamentos de uso contínuo ocultos que o aluno/paciente deve relatar se questionado?
-3. Qual é a gravidade da interação medicamentosa ou problema relacionado a medicamento (PRM) a ser descoberto?
-4. Qual é o nível de autonomia que o agente deve demonstrar na simulação?`;
-
-      gotchas = `- **Fidelidade ao Caso**: O agente de IA deve incorporar o papel do farmacêutico orientador e conduzir a simulação mantendo os alunos desafiados no papel do paciente.
-- **Checagem de Medicamentos**: Use arquivos carregados em \`/dados\` com listas de interações e medicamentos para embasar a resposta.
-- **Feedback Construtivo**: Ao final da simulação, ofereça um relatório de desempenho pedagógico detalhando o que o aluno acertou e onde errou na anamnese farmacêutica.`;
-    }
-
-    const skillMdContent = `---
-title: "${formattedTitle}"
-description: "${formattedDesc}"
-accepts_files: ${isMedical ? 'true' : 'false'}
-supported_formats: ["pdf", "image"]
-trigger: null
-endpoint: null
----
-
-# ${formattedTitle}
-
-${formattedDesc}
-
-## Diferença Fundamental (Abordagem Tradicional vs. Abordagem com a Skill)
-
-${diffTable}
-
-## Passo 0 — Alinhamento e Entrevista Diagnóstica
-
-Antes de executar, confirme com o usuário o que for essencial para a personalização do entregável:
-${step0Questions}
-
-## Workflow Operacional Detalhado
-
-| Etapa / Bloco | Tempo Sugerido | Função / Ação | O que acontece |
-|---|---|---|---|
-| **1. Alinhamento** | 5 min | Confirmar os objetivos e o tom do entregável | Mapeamento do caso simulado, gravidade e contexto pedagógico da aula |
-| **2. Coleta & RAG** | 15 min | Pesquisar na memória da Skill e dados locais | Recuperação de diretrizes semânticas anteriores, arquivos em \`/dados\` e bulas |
-| **3. Raciocínio & Análise** | 20 min | Execução lógica e crítica | Escrita do Chain of Thought, simulação ativa da consulta e roteamento de scripts |
-| **4. Validação & Entrega** | 10 min | Garantia de qualidade (QA) | Auditoria do material produzido frente às restrições do playbook e feedback |
-
-## Diretrizes de Implementação e Gotchas
-
-${gotchas}
-
-## Checkpoints de Validação (QA)
-
-- [ ] Todos os objetivos levantados no Passo 0 foram atingidos?
-- [ ] A resposta cumpre os limites de densidade de texto e tom de voz?
-- [ ] Foram feitas checagens lógicas ou rodados scripts para validar a veracidade dos dados?
-`;
-
-    fs.writeFileSync(path.join(skillPath, 'skill.md'), skillMdContent);
-
-    // Git Commit automático
-    await runGit(['add', folderName]);
-    await runGit(['commit', '-m', `Criar Skill: ${folderName}`]);
-
+    const result = await storage.saveSkill(name, title, description);
     res.status(201).json({
-      name: folderName,
-      title: formattedTitle,
-      description: formattedDesc,
+      name: result.folderName,
+      title: result.title,
+      description: result.description,
       message: 'Skill criada com sucesso!'
     });
   } catch (error) {
@@ -745,9 +588,21 @@ app.post('/api/skills/generate', async (req, res) => {
   }
 
   const folderName = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
-  const skillPath = path.join(SKILLS_DIR, folderName);
+  
+  let exists = false;
+  try {
+    if (storage.useFirebase) {
+      const skills = await storage.listSkills();
+      exists = skills.some(s => s.name === folderName);
+    } else {
+      const skillPath = path.join(SKILLS_DIR, folderName);
+      exists = fs.existsSync(skillPath);
+    }
+  } catch (err) {
+    console.error('Erro ao verificar existência da skill:', err);
+  }
 
-  if (fs.existsSync(skillPath)) {
+  if (exists) {
     return res.status(400).json({ error: 'Já existe uma Skill com esta pasta/nome.' });
   }
 
@@ -853,37 +708,22 @@ REGRAS CRÍTICAS:
       }
     }
 
-    // Cria diretórios da Skill
-    fs.mkdirSync(skillPath);
-    fs.mkdirSync(path.join(skillPath, 'dados'));
-    fs.mkdirSync(path.join(skillPath, 'assets'));
-    fs.mkdirSync(path.join(skillPath, 'tools'));
+    // Cria a Skill no storage
+    await storage.saveSkill(folderName, formattedTitle, formattedDesc, parsedResult.skillMd || '');
 
-    // Salva o skill.md principal
-    fs.writeFileSync(path.join(skillPath, 'skill.md'), parsedResult.skillMd || '');
-
-    // Salva os arquivos guia LEIA-ME.md
+    // Salva os arquivos guia LEIA-ME.md no storage
     const readmes = parsedResult.readmes || {};
-    fs.writeFileSync(path.join(skillPath, 'dados', 'LEIA-ME.md'), readmes.dados || getDadosReadme(formattedTitle, formattedDesc));
-    fs.writeFileSync(path.join(skillPath, 'assets', 'LEIA-ME.md'), readmes.assets || getAssetsReadme(formattedTitle, formattedDesc));
-    fs.writeFileSync(path.join(skillPath, 'tools', 'LEIA-ME.md'), readmes.tools || getToolsReadme(formattedTitle, folderName, formattedDesc));
+    await storage.saveFile(folderName, 'dados/LEIA-ME.md', readmes.dados || getDadosReadme(formattedTitle, formattedDesc));
+    await storage.saveFile(folderName, 'assets/LEIA-ME.md', readmes.assets || getAssetsReadme(formattedTitle, formattedDesc));
+    await storage.saveFile(folderName, 'tools/LEIA-ME.md', readmes.tools || getToolsReadme(formattedTitle, folderName, formattedDesc));
 
     // Salva os arquivos de referência adicionais criados pela IA
     const references = parsedResult.references || [];
     for (const ref of references) {
       if (ref.path && ref.content) {
-        const safeRefPath = safePath(skillPath, ref.path);
-        const parentDir = path.dirname(safeRefPath);
-        if (!fs.existsSync(parentDir)) {
-          fs.mkdirSync(parentDir, { recursive: true });
-        }
-        fs.writeFileSync(safeRefPath, ref.content);
+        await storage.saveFile(folderName, ref.path, ref.content);
       }
     }
-
-    // Git Commit automático
-    await runGit(['add', folderName]);
-    await runGit(['commit', '-m', `Criar Skill Premium Inteligente: ${folderName}`]);
 
     res.status(201).json({
       name: folderName,
@@ -908,25 +748,8 @@ app.post('/api/skills/:name/file', async (req, res) => {
   }
 
   try {
-    const skillPath = safePath(SKILLS_DIR, name);
-    if (!fs.existsSync(skillPath)) {
-      return res.status(404).json({ error: 'Skill não encontrada' });
-    }
-
-    const fullPath = safePath(skillPath, relativePath);
-    
-    // Cria diretórios pais se não existirem
-    const parentDir = path.dirname(fullPath);
-    if (!fs.existsSync(parentDir)) {
-      fs.mkdirSync(parentDir, { recursive: true });
-    }
-
-    fs.writeFileSync(fullPath, content || '');
-
-    // Git Commit automático
-    const gitRelativePath = path.join(name, relativePath).replace(/\\/g, '/');
-    await runGit(['add', gitRelativePath]);
-    await runGit(['commit', '-m', `Atualizar arquivo: ${gitRelativePath}`]);
+    const isBinary = false;
+    await storage.saveFile(name, relativePath, content, isBinary);
 
     // Se for o playbook skill.md, sincroniza os gatilhos de automação
     if (relativePath === 'skill.md') {
@@ -937,7 +760,7 @@ app.post('/api/skills/:name/file', async (req, res) => {
       }
     }
 
-    res.json({ message: 'Arquivo salvo com sucesso e comitado no Git!' });
+    res.json({ message: 'Arquivo salvo com sucesso!' });
   } catch (error) {
     res.status(500).json({ error: 'Erro ao salvar arquivo: ' + error.message });
   }
@@ -953,31 +776,8 @@ app.delete('/api/skills/:name/file', async (req, res) => {
   }
 
   try {
-    const skillPath = safePath(SKILLS_DIR, name);
-    if (!fs.existsSync(skillPath)) {
-      return res.status(404).json({ error: 'Skill não encontrada' });
-    }
-
-    const fullPath = safePath(skillPath, relativePath);
-    if (!fs.existsSync(fullPath)) {
-      return res.status(404).json({ error: 'Arquivo/pasta não encontrado' });
-    }
-
-    // Rastreia para o git remover
-    const gitRelativePath = path.join(name, relativePath).replace(/\\/g, '/');
-
-    const stats = fs.statSync(fullPath);
-    if (stats.isDirectory()) {
-      fs.rmSync(fullPath, { recursive: true, force: true });
-    } else {
-      fs.unlinkSync(fullPath);
-    }
-
-    // Git Commit automático
-    await runGit(['add', '-A', name]); // Adiciona todas as modificações na pasta da skill (incluindo deleções)
-    await runGit(['commit', '-m', `Remover: ${gitRelativePath}`]);
-
-    res.json({ message: 'Item removido e registrado no Git!' });
+    await storage.deleteFile(name, relativePath);
+    res.json({ message: 'Item removido com sucesso!' });
   } catch (error) {
     res.status(500).json({ error: 'Erro ao deletar item: ' + error.message });
   }
@@ -997,13 +797,22 @@ app.post('/api/skills/:name/upload/:folder', upload.array('files'), async (req, 
       return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
     }
 
-    // Git Commit automático para todos os arquivos enviados
     for (const file of uploadedFiles) {
-      const gitRelativePath = path.join(name, folder, file.filename).replace(/\\/g, '/');
-      await runGit(['add', gitRelativePath]);
+      const relativePath = `${folder}/${file.filename}`;
+      
+      if (storage.useFirebase) {
+        const buffer = fs.readFileSync(file.path);
+        await storage.saveBinaryFile(name, relativePath, buffer, file.mimetype);
+        fs.unlinkSync(file.path); // Limpa temp
+      } else {
+        const gitRelativePath = path.join(name, folder, file.filename).replace(/\\/g, '/');
+        await runGit(['add', gitRelativePath]);
+      }
     }
     
-    await runGit(['commit', '-m', `Upload de ${uploadedFiles.length} arquivo(s) na pasta ${folder} de ${name}`]);
+    if (!storage.useFirebase) {
+      await runGit(['commit', '-m', `Upload de ${uploadedFiles.length} arquivo(s) na pasta ${folder} de ${name}`]);
+    }
 
     res.json({
       message: 'Upload concluído com sucesso!',
@@ -1020,28 +829,10 @@ app.get('/api/skills/:name/history', async (req, res) => {
   const filePath = req.query.path;
 
   try {
-    // Filtro por arquivo ou pasta da Skill
-    const gitPath = filePath ? path.join(name, filePath).replace(/\\/g, '/') : name;
-    
-    // Executa git log com formato personalizado para parsing fácil
-    // %H = commit hash, %s = subject, %ad = author date, %an = author name
-    const result = await runGit(['log', '--date=iso', '--format=%H|%s|%ad|%an', '--', gitPath]);
-    
-    if (!result.success) {
-      return res.json([]); // Se não houver commits ainda, ou erro, retorna array vazio
-    }
-
-    const commits = result.stdout
-      .split('\n')
-      .filter(line => line.trim().length > 0)
-      .map(line => {
-        const [hash, message, date, author] = line.split('|');
-        return { hash, message, date, author };
-      });
-
+    const commits = await storage.getHistory(name, filePath);
     res.json(commits);
   } catch (error) {
-    res.status(500).json({ error: 'Erro ao obter histórico Git: ' + error.message });
+    res.status(500).json({ error: 'Erro ao obter histórico: ' + error.message });
   }
 });
 
@@ -1055,27 +846,7 @@ app.post('/api/skills/:name/revert', async (req, res) => {
   }
 
   try {
-    const gitPath = filePath ? path.join(name, filePath).replace(/\\/g, '/') : name;
-
-    // Checkout específico do arquivo no commit indicado
-    // git checkout [hash] -- [path]
-    const revertResult = await runGit(['checkout', commitHash, '--', gitPath]);
-
-    if (!revertResult.success) {
-      return res.status(400).json({ 
-        error: 'Erro no checkout do Git', 
-        details: revertResult.stderr || revertResult.error 
-      });
-    }
-
-    // Cria um commit informando a reversão
-    await runGit(['add', gitPath]);
-    const commitMsg = filePath 
-      ? `Reverter arquivo ${filePath} para versão ${commitHash.substring(0, 7)}`
-      : `Reverter Skill ${name} inteira para versão ${commitHash.substring(0, 7)}`;
-    
-    await runGit(['commit', '-m', commitMsg]);
-
+    await storage.revertFile(name, filePath, commitHash);
     res.json({ message: 'Reversão concluída com sucesso!' });
   } catch (error) {
     res.status(500).json({ error: 'Erro ao reverter: ' + error.message });
@@ -1083,17 +854,36 @@ app.post('/api/skills/:name/revert', async (req, res) => {
 });
 
 // 10. Exportar Skill como ZIP
-app.get('/api/skills/:name/export', (req, res) => {
+app.get('/api/skills/:name/export', async (req, res) => {
   const { name } = req.params;
 
   try {
-    const skillPath = safePath(SKILLS_DIR, name);
-    if (!fs.existsSync(skillPath)) {
-      return res.status(404).json({ error: 'Skill não encontrada' });
-    }
-
     const zip = new AdmZip();
-    zip.addLocalFolder(skillPath);
+    
+    if (storage.useFirebase) {
+      const details = await storage.getSkill(name);
+      // Detalhes contém a árvore de arquivos, mas para exportar vamos ler todos os arquivos de texto e binários
+      // Podemos consultar a coleção de arquivos diretamente usando a referência do Firestore do storage
+      const skillsCollection = admin.firestore().collection('skills').doc(name).collection('files');
+      const snapshot = await skillsCollection.get();
+      
+      for (const doc of snapshot.docs) {
+        const fileData = doc.data();
+        const filePath = fileData.path;
+        if (fileData.isBinary) {
+          const buffer = await storage.downloadBinaryFile(name, filePath);
+          zip.addFile(filePath, buffer);
+        } else {
+          zip.addFile(filePath, Buffer.from(fileData.content || '', 'utf8'));
+        }
+      }
+    } else {
+      const skillPath = safePath(SKILLS_DIR, name);
+      if (!fs.existsSync(skillPath)) {
+        return res.status(404).json({ error: 'Skill não encontrada' });
+      }
+      zip.addLocalFolder(skillPath);
+    }
     
     const buffer = zip.toBuffer();
     
@@ -1346,21 +1136,10 @@ app.post('/api/agent/chat', async (req, res) => {
     trace.files.push({ name: fileName || 'documento', mimeType: fileMime });
   }
 
-  // Lista as skills disponíveis na pasta local para formar o catálogo dinâmico
+  // Lista as skills disponíveis para formar o catálogo dinâmico
   let availableSkills = [];
   try {
-    const items = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
-    for (const item of items) {
-      if (item.name === '.git' || !item.isDirectory() || item.name === '.memory') continue;
-      const { title, description, accepts_files, supported_formats } = parseSkillMetadata(item.name);
-      availableSkills.push({ 
-        name: item.name, 
-        title, 
-        description,
-        accepts_files,
-        supported_formats
-      });
-    }
+    availableSkills = await storage.listSkills();
   } catch (err) {
     console.error('Erro ao listar catálogo para o agente:', err);
   }
@@ -1418,8 +1197,8 @@ Se nenhuma skill se aplicar ao pedido do usuário, responda com needsSkill: fals
           const routeResult = JSON.parse(rawText.trim());
           trace.routingReason = routeResult.reason || null;
           if (routeResult.needsSkill && routeResult.skillName) {
-            const skillPath = path.join(SKILLS_DIR, routeResult.skillName);
-            if (fs.existsSync(skillPath)) {
+            const exists = availableSkills.some(s => s.name === routeResult.skillName);
+            if (exists) {
               skillToUse = routeResult.skillName;
               trace.skillName = skillToUse;
               const skillTitle = availableSkills.find(s => s.name === skillToUse)?.title || skillToUse;
@@ -1482,7 +1261,7 @@ Se nenhuma skill se aplicar ao pedido do usuário, responda com needsSkill: fals
       
       let thoughtProcess = '';
       const thoughtRegex = /<thought_process>([\s\S]*?)<\/thought_process>/i;
-      const thoughtMatch = replyText.match(thoughtRegex);
+    const thoughtMatch = replyText.match(thoughtRegex);
       if (thoughtMatch) {
         thoughtProcess = thoughtMatch[1].trim();
         trace.thoughtProcess = thoughtProcess;
@@ -1510,29 +1289,36 @@ Se nenhuma skill se aplicar ao pedido do usuário, responda com needsSkill: fals
 
   // --- EXECUÇÃO COM SKILL ATIVA ---
   try {
-    const skillPath = path.join(SKILLS_DIR, skillToUse);
-    const skillMdPath = path.join(skillPath, 'skill.md');
     let playbookContent = '';
-    if (fs.existsSync(skillMdPath)) {
-      playbookContent = fs.readFileSync(skillMdPath, 'utf8');
+    try {
+      const file = await storage.getFileContent(skillToUse, 'skill.md');
+      playbookContent = file.content || '';
+    } catch (playbookErr) {
+      console.warn('Playbook não encontrado no chat do agente:', playbookErr);
     }
 
     // --- ETAPA RAG: Busca semântica por preferências anteriores ---
     let matchedMemoriesPrompt = '';
     try {
-      const skillMemories = vectorDB.getMemories(skillToUse);
-      if (skillMemories.length > 0) {
-        steps.push({ step: 'rag_query', detail: 'Pesquisando aprendizados antigos no banco vetorial...' });
+      let matched = [];
+      if (storage.useFirebase) {
         const queryEmbedding = await getGeminiEmbedding(lastUserMessage || 'Analise o arquivo.', actualApiKey);
-        const matched = vectorDB.search(skillToUse, queryEmbedding, 3, 0.45);
-        if (matched.length > 0) {
-          trace.memories = matched.map(m => m.text);
-          steps.push({ step: 'rag_retrieved', detail: `Resgatou ${matched.length} preferências do contexto.` });
-          matchedMemoriesPrompt = `\n\n=== HISTÓRICO E PREFERÊNCIAS APRENDIDAS (Recuperado do Banco Vetorial) ===
+        matched = await storage.searchMemories(skillToUse, queryEmbedding, 3, 0.45);
+      } else {
+        const skillMemories = vectorDB.getMemories(skillToUse);
+        if (skillMemories && skillMemories.length > 0) {
+          const queryEmbedding = await getGeminiEmbedding(lastUserMessage || 'Analise o arquivo.', actualApiKey);
+          matched = vectorDB.search(skillToUse, queryEmbedding, 3, 0.45);
+        }
+      }
+      
+      if (matched && matched.length > 0) {
+        trace.memories = matched.map(m => m.text);
+        steps.push({ step: 'rag_retrieved', detail: `Resgatou ${matched.length} preferências do contexto.` });
+        matchedMemoriesPrompt = `\n\n=== HISTÓRICO E PREFERÊNCIAS APRENDIDAS (Recuperado do Banco Vetorial) ===
 Siga rigorosamente estas preferências de comportamento e regras conceituais aprendidas em conversas anteriores com o usuário para esta Skill:
 ${matched.map(m => `- ${m.text}`).join('\n')}
 === FIM DAS PREFERÊNCIAS APRENDIDAS ===`;
-        }
       }
     } catch (ragErr) {
       console.error('Erro ao realizar busca RAG:', ragErr);
@@ -1540,15 +1326,34 @@ ${matched.map(m => `- ${m.text}`).join('\n')}
 
     // Lê os arquivos da pasta dados/ e scripts da pasta tools/
     let dadosFiles = [];
-    const dadosPath = path.join(skillPath, 'dados');
-    if (fs.existsSync(dadosPath)) {
-      dadosFiles = fs.readdirSync(dadosPath);
-    }
-
     let toolsScripts = [];
-    const toolsPath = path.join(skillPath, 'tools');
-    if (fs.existsSync(toolsPath)) {
-      toolsScripts = fs.readdirSync(toolsPath).filter(f => f.endsWith('.py'));
+    
+    if (storage.useFirebase) {
+      const details = await storage.getSkill(skillToUse);
+      const findFilesRecursive = (nodes) => {
+        const list = [];
+        for (const node of nodes) {
+          if (node.type === 'file') {
+            list.push(node.path);
+          } else if (node.children) {
+            list.push(...findFilesRecursive(node.children));
+          }
+        }
+        return list;
+      };
+      const allFiles = findFilesRecursive(details.files || []);
+      dadosFiles = allFiles.filter(f => f.startsWith('dados/')).map(f => f.replace('dados/', ''));
+      toolsScripts = allFiles.filter(f => f.startsWith('tools/') && f.endsWith('.py')).map(f => f.replace('tools/', ''));
+    } else {
+      const skillPath = path.join(SKILLS_DIR, skillToUse);
+      const dadosPath = path.join(skillPath, 'dados');
+      if (fs.existsSync(dadosPath)) {
+        dadosFiles = fs.readdirSync(dadosPath);
+      }
+      const toolsPath = path.join(skillPath, 'tools');
+      if (fs.existsSync(toolsPath)) {
+        toolsScripts = fs.readdirSync(toolsPath).filter(f => f.endsWith('.py'));
+      }
     }
 
     // Constrói o Prompt de Sistema com o Contexto da Skill e RAG
@@ -1563,7 +1368,7 @@ Arquivos de referência disponíveis na pasta /dados: ${JSON.stringify(dadosFile
 Scripts de automação disponíveis na pasta /tools: ${JSON.stringify(toolsScripts)}
 
 Instruções de Resposta:
-1. Raciocínio Oculto (Chain of Thought): Você DEVE sempre iniciar sua resposta abrindo a tag <thought_process> e descrever nela todo o seu raciocínio, análises e tomadas de decisão. Após concluir seu raciocínio, feche obrigatoriamente a tag com </thought_process> e então forneça a resposta ou pergunta ao usuário. Nunca misture o raciocínio com a resposta externa e nunca escreva a palavra "thought_process" solta fora das tags XML.
+1. Raciocínio Oculto (Chain of Thought): Você DEVE sempre iniciar sua resposta abrindo a tag <thought_process> e descrever nela todo o seu raciocínio, análises e tomadas de decisão. Após concluir seu raciocínio, feche obrigatoriamente a tag com </thought_process> e então depois forneça a resposta ou pergunta ao usuário. Nunca misture o raciocínio com a resposta externa e nunca escreva a palavra "thought_process" solta fora das tags XML.
 2. Você deve analisar a conversa e guiar o usuário de acordo com o "Roteiro de Perguntas" do Playbook. Não entregue a resposta final até ter coletado todos os dados do roteiro.
 3. Se você precisar rodar um dos scripts de automação (da lista de scripts acima) para obter dados ou realizar cálculos, você DEVE responder estritamente com este formato JSON:
 {
@@ -1689,14 +1494,24 @@ Sempre responda em Português do Brasil (pt-BR).`;
 
       steps.push({ step: 'tool_executing', detail: `Invocando script Python: ${toolName}...` });
 
-      // Executa o script Python
-      const scriptPath = path.join(toolsPath, toolName);
-      if (!fs.existsSync(scriptPath)) {
-        throw new Error(`Script de ferramenta não encontrado: ${toolName}`);
+      let scriptPath = '';
+      let tempScriptFile = '';
+      
+      if (storage.useFirebase) {
+        const fileContent = await storage.getFileContent(skillToUse, `tools/${toolName}`);
+        tempScriptFile = path.join(process.cwd(), `.tmp_script_${Date.now()}_${toolName}`);
+        fs.writeFileSync(tempScriptFile, fileContent.content || '');
+        scriptPath = tempScriptFile;
+      } else {
+        const toolsPath = path.join(SKILLS_DIR, skillToUse, 'tools');
+        scriptPath = path.join(toolsPath, toolName);
+        if (!fs.existsSync(scriptPath)) {
+          throw new Error(`Script de ferramenta não encontrado: ${toolName}`);
+        }
       }
 
-      // Cria um arquivo de argumentos temporário em JSON para total robustez em Windows/CMD
-      const tempArgsFile = path.join(toolsPath, `.tmp_args_${Date.now()}_${Math.floor(Math.random() * 1000)}.json`);
+      // Cria um arquivo de argumentos temporário em JSON
+      const tempArgsFile = path.join(process.cwd(), `.tmp_args_${Date.now()}_${Math.floor(Math.random() * 1000)}.json`);
       fs.writeFileSync(tempArgsFile, JSON.stringify(toolArgs, null, 2));
 
       let toolStdout = '';
@@ -1853,7 +1668,11 @@ Responda estritamente no formato JSON:
         if (result.isRelevant && result.summary) {
           console.log(`Auto-RAG: Nova preferência identificada: "${result.summary}". Vetorizando...`);
           const embedding = await getGeminiEmbedding(result.summary, apiKey);
-          vectorDB.addMemory(skillName, result.summary, embedding);
+          if (storage.useFirebase) {
+            await storage.addMemory(skillName, result.summary, embedding);
+          } else {
+            vectorDB.addMemory(skillName, result.summary, embedding);
+          }
           steps.push({ step: 'memory_saved', detail: `💡 Preferência aprendida: "${result.summary}"` });
         }
       }
@@ -1871,12 +1690,22 @@ app.post('/api/agent/run-tool', async (req, res) => {
   }
 
   try {
-    const scriptPath = safePath(path.join(SKILLS_DIR, skillName, 'tools'), toolName);
-    if (!fs.existsSync(scriptPath)) {
-      return res.status(404).json({ error: 'Script não encontrado' });
+    let scriptPath = '';
+    let tempScriptFile = '';
+    
+    if (storage.useFirebase) {
+      const fileContent = await storage.getFileContent(skillName, `tools/${toolName}`);
+      tempScriptFile = path.join(process.cwd(), `.tmp_script_run_${Date.now()}_${toolName}`);
+      fs.writeFileSync(tempScriptFile, fileContent.content || '');
+      scriptPath = tempScriptFile;
+    } else {
+      scriptPath = safePath(path.join(SKILLS_DIR, skillName, 'tools'), toolName);
+      if (!fs.existsSync(scriptPath)) {
+        return res.status(404).json({ error: 'Script não encontrado' });
+      }
     }
 
-    const tempArgsFile = path.join(path.dirname(scriptPath), `.tmp_args_${Date.now()}.json`);
+    const tempArgsFile = path.join(process.cwd(), `.tmp_args_run_${Date.now()}.json`);
     fs.writeFileSync(tempArgsFile, JSON.stringify(args || {}, null, 2));
 
     let stdoutStr = '';
@@ -1895,6 +1724,9 @@ app.post('/api/agent/run-tool', async (req, res) => {
       if (fs.existsSync(tempArgsFile)) {
         fs.unlinkSync(tempArgsFile);
       }
+      if (tempScriptFile && fs.existsSync(tempScriptFile)) {
+        fs.unlinkSync(tempScriptFile);
+      }
     }
 
     res.json({
@@ -1910,25 +1742,36 @@ app.post('/api/agent/run-tool', async (req, res) => {
 // --- ENDPOINTS DE GERENCIAMENTO DE MEMÓRIA VETORIAL ---
 
 // 1. Obter todas as memórias salvas para uma Skill
-app.get('/api/skills/:name/memories', (req, res) => {
+app.get('/api/skills/:name/memories', async (req, res) => {
   const { name } = req.params;
   try {
-    const list = vectorDB.getMemories(name).map(m => ({
-      id: m.id,
-      text: m.text,
-      timestamp: m.timestamp
-    }));
-    res.json(list);
+    if (storage.useFirebase) {
+      const list = await storage.getMemories(name);
+      res.json(list ? list.map(m => ({ id: m.id, text: m.text, timestamp: m.timestamp })) : []);
+    } else {
+      const list = vectorDB.getMemories(name).map(m => ({
+        id: m.id,
+        text: m.text,
+        timestamp: m.timestamp
+      }));
+      res.json(list);
+    }
   } catch (error) {
     res.status(500).json({ error: 'Erro ao listar memórias: ' + error.message });
   }
 });
 
 // 2. Apagar uma memória específica
-app.delete('/api/skills/:name/memories/:id', (req, res) => {
-  const { id } = req.params;
+app.delete('/api/skills/:name/memories/:id', async (req, res) => {
+  const { name, id } = req.params;
   try {
-    const deleted = vectorDB.deleteMemory(id);
+    let deleted = false;
+    if (storage.useFirebase) {
+      deleted = await storage.deleteMemory(name, id);
+    } else {
+      deleted = vectorDB.deleteMemory(id);
+    }
+    
     if (deleted) {
       res.json({ message: 'Memória deletada com sucesso!' });
     } else {
@@ -1944,17 +1787,7 @@ app.delete('/api/skills/:name/memories/:id', (req, res) => {
 app.delete('/api/skills/:name', async (req, res) => {
   const { name } = req.params;
   try {
-    const skillPath = safePath(SKILLS_DIR, name);
-    if (!fs.existsSync(skillPath)) {
-      return res.status(404).json({ error: 'Skill não encontrada' });
-    }
-
-    fs.rmSync(skillPath, { recursive: true, force: true });
-
-    // Git commit da remoção
-    await runGit(['add', '-A']);
-    await runGit(['commit', '-m', `Deletar Skill inteira: ${name}`]);
-
+    await storage.deleteSkill(name);
     res.json({ message: `Skill '${name}' deletada com sucesso!` });
   } catch (error) {
     res.status(500).json({ error: 'Erro ao deletar Skill: ' + error.message });
@@ -1975,31 +1808,46 @@ const maxConcurrentJobs = 3;
 const maxLogEntries = 100;
 const activeCronJobs = new Map();
 
-function saveLastApiKey(key) {
+async function saveLastApiKey(key) {
   lastUsedApiKey = key;
   try {
-    let currentConfig = {};
-    if (fs.existsSync(CONFIG_FILE)) {
-      currentConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    if (storage.useFirebase) {
+      await storage.saveSystemConfig({ apiKey: key });
+    } else {
+      let currentConfig = {};
+      if (fs.existsSync(CONFIG_FILE)) {
+        currentConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      }
+      currentConfig.apiKey = key;
+      fs.writeFileSync(CONFIG_FILE, JSON.stringify(currentConfig, null, 2));
     }
-    currentConfig.apiKey = key;
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(currentConfig, null, 2));
   } catch (err) {
     console.error('Erro ao salvar chave de API nas configurações:', err);
   }
 }
 
-function getLastApiKey() {
+async function getLastApiKey() {
   if (lastUsedApiKey) return lastUsedApiKey;
   try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      const content = fs.readFileSync(CONFIG_FILE, 'utf8');
-      const parsed = JSON.parse(content);
-      lastUsedApiKey = parsed.apiKey || '';
-      if (parsed.pausedSkills && Array.isArray(parsed.pausedSkills)) {
-        parsed.pausedSkills.forEach(s => pausedSkills.add(s));
+    if (storage.useFirebase) {
+      const config = await storage.getSystemConfig();
+      if (config) {
+        lastUsedApiKey = config.apiKey || '';
+        if (config.pausedSkills && Array.isArray(config.pausedSkills)) {
+          config.pausedSkills.forEach(s => pausedSkills.add(s));
+        }
+        return lastUsedApiKey;
       }
-      return lastUsedApiKey;
+    } else {
+      if (fs.existsSync(CONFIG_FILE)) {
+        const content = fs.readFileSync(CONFIG_FILE, 'utf8');
+        const parsed = JSON.parse(content);
+        lastUsedApiKey = parsed.apiKey || '';
+        if (parsed.pausedSkills && Array.isArray(parsed.pausedSkills)) {
+          parsed.pausedSkills.forEach(s => pausedSkills.add(s));
+        }
+        return lastUsedApiKey;
+      }
     }
   } catch (e) {
     console.error('Erro ao ler chave de API das configurações:', e);
@@ -2007,14 +1855,18 @@ function getLastApiKey() {
   return '';
 }
 
-function saveConfigState() {
+async function saveConfigState() {
   try {
-    let currentConfig = {};
-    if (fs.existsSync(CONFIG_FILE)) {
-      currentConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    if (storage.useFirebase) {
+      await storage.saveSystemConfig({ pausedSkills: Array.from(pausedSkills) });
+    } else {
+      let currentConfig = {};
+      if (fs.existsSync(CONFIG_FILE)) {
+        currentConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      }
+      currentConfig.pausedSkills = Array.from(pausedSkills);
+      fs.writeFileSync(CONFIG_FILE, JSON.stringify(currentConfig, null, 2));
     }
-    currentConfig.pausedSkills = Array.from(pausedSkills);
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(currentConfig, null, 2));
   } catch (err) {
     console.error('Erro ao salvar estado de configurações:', err);
   }
@@ -2037,25 +1889,36 @@ function queueJob(skillName, triggerType, payload) {
   if (automationJobs.length > maxLogEntries) {
     automationJobs.pop();
   }
-  saveAutomationLogs();
+  saveAutomationLogs(); // Fire-and-forget
   triggerWorker();
   return job;
 }
 
-function saveAutomationLogs() {
+async function saveAutomationLogs() {
   try {
-    fs.writeFileSync(AUTOMATION_LOGS_FILE, JSON.stringify(automationJobs.slice(0, 50), null, 2));
+    if (storage.useFirebase) {
+      await storage.saveSystemAutomationLogs(automationJobs.slice(0, 50));
+    } else {
+      fs.writeFileSync(AUTOMATION_LOGS_FILE, JSON.stringify(automationJobs.slice(0, 50), null, 2));
+    }
   } catch (err) {
     console.error('Erro ao salvar logs de automação:', err);
   }
 }
 
-function loadAutomationLogs() {
+async function loadAutomationLogs() {
   try {
-    if (fs.existsSync(AUTOMATION_LOGS_FILE)) {
-      const content = fs.readFileSync(AUTOMATION_LOGS_FILE, 'utf8');
-      const parsed = JSON.parse(content);
-      automationJobs.push(...parsed);
+    if (storage.useFirebase) {
+      const logs = await storage.getSystemAutomationLogs();
+      if (logs) {
+        automationJobs.push(...logs);
+      }
+    } else {
+      if (fs.existsSync(AUTOMATION_LOGS_FILE)) {
+        const content = fs.readFileSync(AUTOMATION_LOGS_FILE, 'utf8');
+        const parsed = JSON.parse(content);
+        automationJobs.push(...parsed);
+      }
     }
   } catch (err) {
     console.error('Erro ao ler logs de automação:', err);
@@ -2088,7 +1951,7 @@ async function triggerWorker() {
 
 async function runBackgroundExecution(job) {
   const startTime = performance.now();
-  const actualApiKey = process.env.GEMINI_API_KEY || getLastApiKey();
+  const actualApiKey = process.env.GEMINI_API_KEY || await getLastApiKey();
   
   job.status = 'running';
   job.startedAt = new Date().toISOString();
@@ -2119,41 +1982,68 @@ async function runBackgroundExecution(job) {
   const lastUserMessage = JSON.stringify(job.payload || {});
   
   try {
-    const skillPath = path.join(SKILLS_DIR, job.skillName);
-    const skillMdPath = path.join(skillPath, 'skill.md');
     let playbookContent = '';
-    if (fs.existsSync(skillMdPath)) {
-      playbookContent = fs.readFileSync(skillMdPath, 'utf8');
+    try {
+      const file = await storage.getFileContent(job.skillName, 'skill.md');
+      playbookContent = file.content || '';
+    } catch (playbookErr) {
+      console.warn('Playbook não encontrado no background:', playbookErr);
     }
 
     // --- ETAPA RAG ---
     let matchedMemoriesPrompt = '';
     try {
-      const skillMemories = vectorDB.getMemories(job.skillName);
-      if (skillMemories.length > 0) {
-        steps.push({ step: 'rag_query', detail: 'Pesquisando aprendizados vetoriais...' });
+      let matched = [];
+      if (storage.useFirebase) {
         const queryEmbedding = await getGeminiEmbedding(lastUserMessage || 'Analise o payload.', actualApiKey);
-        const matched = vectorDB.search(job.skillName, queryEmbedding, 3, 0.45);
-        if (matched.length > 0) {
-          trace.memories = matched.map(m => m.text);
-          steps.push({ step: 'rag_retrieved', detail: `Resgatou ${matched.length} preferências.` });
-          matchedMemoriesPrompt = `\n\n=== HISTÓRICO E PREFERÊNCIAS APRENDIDAS (RAG) ===\n${matched.map(m => `- ${m.text}`).join('\n')}\n=== FIM ===`;
+        matched = await storage.searchMemories(job.skillName, queryEmbedding, 3, 0.45);
+      } else {
+        const skillMemories = vectorDB.getMemories(job.skillName);
+        if (skillMemories && skillMemories.length > 0) {
+          steps.push({ step: 'rag_query', detail: 'Pesquisando aprendizados vetoriais...' });
+          const queryEmbedding = await getGeminiEmbedding(lastUserMessage || 'Analise o payload.', actualApiKey);
+          matched = vectorDB.search(job.skillName, queryEmbedding, 3, 0.45);
         }
+      }
+      
+      if (matched && matched.length > 0) {
+        trace.memories = matched.map(m => m.text);
+        steps.push({ step: 'rag_retrieved', detail: `Resgatou ${matched.length} preferências.` });
+        matchedMemoriesPrompt = `\n\n=== HISTÓRICO E PREFERÊNCIAS APRENDIDAS (RAG) ===\n${matched.map(m => `- ${m.text}`).join('\n')}\n=== FIM ===`;
       }
     } catch (ragErr) {
       console.error('Erro RAG em Worker:', ragErr);
     }
 
     let dadosFiles = [];
-    const dadosPath = path.join(skillPath, 'dados');
-    if (fs.existsSync(dadosPath)) {
-      dadosFiles = fs.readdirSync(dadosPath);
-    }
-
     let toolsScripts = [];
-    const toolsPath = path.join(skillPath, 'tools');
-    if (fs.existsSync(toolsPath)) {
-      toolsScripts = fs.readdirSync(toolsPath).filter(f => f.endsWith('.py'));
+    
+    if (storage.useFirebase) {
+      const details = await storage.getSkill(job.skillName);
+      const findFilesRecursive = (nodes) => {
+        const list = [];
+        for (const node of nodes) {
+          if (node.type === 'file') {
+            list.push(node.path);
+          } else if (node.children) {
+            list.push(...findFilesRecursive(node.children));
+          }
+        }
+        return list;
+      };
+      const allFiles = findFilesRecursive(details.files || []);
+      dadosFiles = allFiles.filter(f => f.startsWith('dados/')).map(f => f.replace('dados/', ''));
+      toolsScripts = allFiles.filter(f => f.startsWith('tools/') && f.endsWith('.py')).map(f => f.replace('tools/', ''));
+    } else {
+      const skillPath = path.join(SKILLS_DIR, job.skillName);
+      const dadosPath = path.join(skillPath, 'dados');
+      if (fs.existsSync(dadosPath)) {
+        dadosFiles = fs.readdirSync(dadosPath);
+      }
+      const toolsPath = path.join(skillPath, 'tools');
+      if (fs.existsSync(toolsPath)) {
+        toolsScripts = fs.readdirSync(toolsPath).filter(f => f.endsWith('.py'));
+      }
     }
 
     const agentSystemInstruction = `Você é o Agente Executivo operando a automação da AI SKILL: "${job.skillName}".
@@ -2162,10 +2052,10 @@ Sua tarefa é analisar o payload JSON de entrada recebido do webhook/cron e exec
 ${playbookContent}
 === FIM DO PLAYBOOK ===
 ${matchedMemoriesPrompt}
-
+ 
 Arquivos de referência disponíveis: ${JSON.stringify(dadosFiles)}
 Scripts de automação disponíveis: ${JSON.stringify(toolsScripts)}
-
+ 
 Instruções de Resposta:
 1. Raciocínio Oculto (Chain of Thought): Antes de dar sua resposta final, documente seu raciocínio dentro da tag XML <thought_process>...</thought_process>.
 2. Se precisar rodar um dos scripts de automação, responda estritamente com este formato JSON:
@@ -2231,12 +2121,23 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
 
       steps.push({ step: 'tool_executing', detail: `Invocando script Python: ${toolName}...` });
 
-      const scriptPath = path.join(toolsPath, toolName);
-      if (!fs.existsSync(scriptPath)) {
-        throw new Error(`Script de ferramenta não encontrado: ${toolName}`);
+      let scriptPath = '';
+      let tempScriptFile = '';
+      
+      if (storage.useFirebase) {
+        const fileContent = await storage.getFileContent(job.skillName, `tools/${toolName}`);
+        tempScriptFile = path.join(process.cwd(), `.tmp_script_bg_${Date.now()}_${toolName}`);
+        fs.writeFileSync(tempScriptFile, fileContent.content || '');
+        scriptPath = tempScriptFile;
+      } else {
+        const toolsPath = path.join(SKILLS_DIR, job.skillName, 'tools');
+        scriptPath = path.join(toolsPath, toolName);
+        if (!fs.existsSync(scriptPath)) {
+          throw new Error(`Script de ferramenta não encontrado: ${toolName}`);
+        }
       }
 
-      const tempArgsFile = path.join(toolsPath, `.tmp_args_bg_${Date.now()}.json`);
+      const tempArgsFile = path.join(process.cwd(), `.tmp_args_bg_${Date.now()}.json`);
       fs.writeFileSync(tempArgsFile, JSON.stringify(toolArgs, null, 2));
 
       let toolStdout = '';
@@ -2254,6 +2155,9 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
       } finally {
         if (fs.existsSync(tempArgsFile)) {
           fs.unlinkSync(tempArgsFile);
+        }
+        if (tempScriptFile && fs.existsSync(tempScriptFile)) {
+          fs.unlinkSync(tempScriptFile);
         }
       }
 
@@ -2339,7 +2243,7 @@ Formate a análise final em markdown para o relatório do webhook.`;
   }
 }
 
-function syncAutomationTriggers() {
+async function syncAutomationTriggers() {
   console.log('Sincronizando gatilhos de automação...');
   
   // Cancela crons ativos
@@ -2349,27 +2253,35 @@ function syncAutomationTriggers() {
   activeCronJobs.clear();
 
   try {
-    const items = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
-    for (const item of items) {
-      if (item.name === '.git' || !item.isDirectory() || item.name === '.memory') continue;
-      
-      const meta = parseSkillMetadata(item.name);
-      
-      if (pausedSkills.has(item.name)) {
-        console.log(`Gatilhos da Skill '${item.name}' estão PAUSADOS.`);
+    let skillsList = [];
+    if (storage.useFirebase) {
+      skillsList = await storage.listSkills();
+    } else {
+      const items = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
+      for (const item of items) {
+        if (item.name === '.git' || !item.isDirectory() || item.name === '.memory') continue;
+        const playbookContent = fs.readFileSync(path.join(SKILLS_DIR, item.name, 'skill.md'), 'utf8');
+        const meta = parseSkillMetadataFromContent(item.name, playbookContent);
+        skillsList.push({ name: item.name, ...meta });
+      }
+    }
+
+    for (const skill of skillsList) {
+      if (pausedSkills.has(skill.name)) {
+        console.log(`Gatilhos da Skill '${skill.name}' estão PAUSADOS.`);
         continue;
       }
 
-      if (meta.trigger === 'cron' && meta.cron_expression) {
+      if (skill.trigger === 'cron' && skill.cron_expression) {
         try {
-          console.log(`Registrando Cron para Skill '${item.name}': "${meta.cron_expression}"`);
-          const task = cron.schedule(meta.cron_expression, () => {
-            console.log(`Cron disparado para Skill '${item.name}'`);
-            queueJob(item.name, 'cron', { triggeredAt: new Date().toISOString() });
+          console.log(`Registrando Cron para Skill '${skill.name}': "${skill.cron_expression}"`);
+          const task = cron.schedule(skill.cron_expression, () => {
+            console.log(`Cron disparado para Skill '${skill.name}'`);
+            queueJob(skill.name, 'cron', { triggeredAt: new Date().toISOString() });
           });
-          activeCronJobs.set(item.name, task);
+          activeCronJobs.set(skill.name, task);
         } catch (cronErr) {
-          console.error(`Erro ao registrar cron para skill ${item.name}:`, cronErr);
+          console.error(`Erro ao registrar cron para skill ${skill.name}:`, cronErr);
         }
       }
     }
@@ -2380,26 +2292,22 @@ function syncAutomationTriggers() {
 
 // --- ENDPOINTS DO INSPETOR E DASHBOARD DE AUTOMAÇÕES ---
 
-app.get('/api/automations', (req, res) => {
+app.get('/api/automations', async (req, res) => {
   try {
-    const items = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
+    const skillsList = await storage.listSkills();
     const automations = [];
 
-    for (const item of items) {
-      if (item.name === '.git' || !item.isDirectory() || item.name === '.memory') continue;
-      
-      const meta = parseSkillMetadata(item.name);
-      
-      if (meta.trigger) {
+    for (const skill of skillsList) {
+      if (skill.trigger) {
         automations.push({
-          skillName: item.name,
-          title: meta.title,
-          description: meta.description,
-          triggerType: meta.trigger,
-          cronExpression: meta.cron_expression,
-          webhookEndpoint: `/api/webhooks/${item.name}`,
-          paused: pausedSkills.has(item.name),
-          lastExecution: automationJobs.find(j => j.skillName === item.name) || null
+          skillName: skill.name,
+          title: skill.title,
+          description: skill.description,
+          triggerType: skill.trigger,
+          cronExpression: skill.cron_expression,
+          webhookEndpoint: `/api/webhooks/${skill.name}`,
+          paused: pausedSkills.has(skill.name),
+          lastExecution: automationJobs.find(j => j.skillName === skill.name) || null
         });
       }
     }
@@ -2413,14 +2321,22 @@ app.get('/api/automations/logs', (req, res) => {
   res.json(automationJobs);
 });
 
-app.post('/api/automations/:skillName/trigger', (req, res) => {
+app.post('/api/automations/:skillName/trigger', async (req, res) => {
   const { skillName } = req.params;
   const payload = req.body || {};
 
   try {
-    const skillPath = safePath(SKILLS_DIR, skillName);
-    if (!fs.existsSync(skillPath)) {
-      return res.status(404).json({ error: 'Skill não encontrada.' });
+    if (storage.useFirebase) {
+      const skills = await storage.listSkills();
+      const exists = skills.some(s => s.name === skillName);
+      if (!exists) {
+        return res.status(404).json({ error: 'Skill não encontrada.' });
+      }
+    } else {
+      const skillPath = safePath(SKILLS_DIR, skillName);
+      if (!fs.existsSync(skillPath)) {
+        return res.status(404).json({ error: 'Skill não encontrada.' });
+      }
     }
 
     const job = queueJob(skillName, 'manual', payload);
@@ -2430,7 +2346,7 @@ app.post('/api/automations/:skillName/trigger', (req, res) => {
   }
 });
 
-app.post('/api/automations/:skillName/toggle', (req, res) => {
+app.post('/api/automations/:skillName/toggle', async (req, res) => {
   const { skillName } = req.params;
   try {
     if (pausedSkills.has(skillName)) {
@@ -2440,15 +2356,15 @@ app.post('/api/automations/:skillName/toggle', (req, res) => {
       pausedSkills.add(skillName);
       console.log(`Skill '${skillName}' pausada.`);
     }
-    saveConfigState();
-    syncAutomationTriggers();
+    await saveConfigState();
+    await syncAutomationTriggers();
     res.json({ paused: pausedSkills.has(skillName), message: 'Status alterado com sucesso.' });
   } catch (error) {
     res.status(500).json({ error: 'Erro ao alternar status da automação: ' + error.message });
   }
 });
 
-app.post('/api/webhooks/:skillName', (req, res) => {
+app.post('/api/webhooks/:skillName', async (req, res) => {
   const { skillName } = req.params;
   const payload = req.body || {};
 
@@ -2460,13 +2376,24 @@ app.post('/api/webhooks/:skillName', (req, res) => {
   }
 
   try {
-    const skillPath = safePath(SKILLS_DIR, skillName);
-    if (!fs.existsSync(skillPath)) {
+    let skill = null;
+    if (storage.useFirebase) {
+      const skills = await storage.listSkills();
+      skill = skills.find(s => s.name === skillName);
+    } else {
+      const skillPath = safePath(SKILLS_DIR, skillName);
+      if (!fs.existsSync(skillPath)) {
+        return res.status(404).json({ error: `Skill '${skillName}' não encontrada.` });
+      }
+      const playbookContent = fs.readFileSync(path.join(skillPath, 'skill.md'), 'utf8');
+      skill = { name: skillName, ...parseSkillMetadataFromContent(skillName, playbookContent) };
+    }
+
+    if (!skill) {
       return res.status(404).json({ error: `Skill '${skillName}' não encontrada.` });
     }
 
-    const meta = parseSkillMetadata(skillName);
-    if (meta.trigger !== 'webhook') {
+    if (skill.trigger !== 'webhook') {
       return res.status(400).json({ error: `A Skill '${skillName}' não está configurada para receber Webhooks.` });
     }
 
@@ -2491,14 +2418,8 @@ app.post('/api/skills/:name/automation', async (req, res) => {
   const { triggerType, cronExpression } = req.body;
 
   try {
-    const skillPath = safePath(SKILLS_DIR, name);
-    const filePath = path.join(skillPath, 'skill.md');
-
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'Playbook skill.md não encontrado para esta Skill.' });
-    }
-
-    let content = fs.readFileSync(filePath, 'utf8');
+    const file = await storage.getFileContent(name, 'skill.md');
+    let content = file.content;
     const frontmatterRegex = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/;
     const match = content.match(frontmatterRegex);
 
@@ -2519,7 +2440,6 @@ app.post('/api/skills/:name/automation', async (req, res) => {
       }
     }
 
-    // Atualiza metadados do trigger
     if (triggerType === 'webhook') {
       yamlData['trigger'] = 'webhook';
       yamlData['endpoint'] = `"/api/webhooks/${name}"`;
@@ -2532,7 +2452,6 @@ app.post('/api/skills/:name/automation', async (req, res) => {
       yamlData['endpoint'] = 'null';
     }
 
-    // Reconstrói o cabeçalho YAML
     let newYamlStr = '---\n';
     for (const [k, v] of Object.entries(yamlData)) {
       newYamlStr += `${k}: ${v}\n`;
@@ -2540,14 +2459,10 @@ app.post('/api/skills/:name/automation', async (req, res) => {
     newYamlStr += '---\n';
 
     const newContent = newYamlStr + bodyContent;
-    fs.writeFileSync(filePath, newContent, 'utf8');
-
-    // Auto-commit no Git
-    await runGit(['add', `${name}/skill.md`]);
-    await runGit(['commit', '-m', `Configurar automação da skill ${name} para ${triggerType}`]);
+    await storage.saveFile(name, 'skill.md', newContent);
 
     // Recarrega os gatilhos no servidor
-    syncAutomationTriggers();
+    await syncAutomationTriggers();
 
     res.json({
       message: 'Gatilho de automação configurado com sucesso!',
@@ -2561,13 +2476,13 @@ app.post('/api/skills/:name/automation', async (req, res) => {
 });
 
 // Inicia o servidor
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Servidor rodando com sucesso em http://localhost:${PORT}`);
   try {
-    getLastApiKey();
-    loadAutomationLogs();
+    await getLastApiKey();
+    await loadAutomationLogs();
     seedTemplates();
-    syncAutomationTriggers();
+    await syncAutomationTriggers();
   } catch (startupErr) {
     console.error('Erro na inicialização do modulo de automação:', startupErr);
   }
@@ -2876,24 +2791,55 @@ app.get('/api/templates', (req, res) => {
 app.post('/api/templates/:name/clone', async (req, res) => {
   const { name } = req.params;
   const sourcePath = path.join(TEMPLATES_DIR, name);
-  const targetPath = path.join(SKILLS_DIR, name);
   
   if (!fs.existsSync(sourcePath)) {
     return res.status(404).json({ error: 'Template não encontrado.' });
   }
-  if (fs.existsSync(targetPath)) {
-    return res.status(400).json({ error: 'Você já possui uma Skill instalada com este nome.' });
-  }
   
   try {
-    copyFolderRecursiveSync(sourcePath, targetPath);
-    
-    // Git Commit automático
-    await runGit(['add', name]);
-    await runGit(['commit', '-m', `Instalar template de Skill: ${name}`]);
+    if (storage.useFirebase) {
+      const skills = await storage.listSkills();
+      if (skills.some(s => s.name === name)) {
+        return res.status(400).json({ error: 'Você já possui uma Skill instalada com este nome.' });
+      }
+
+      const copyToFirebaseRecursive = async (dir, relativePrefix = '') => {
+        const items = fs.readdirSync(dir, { withFileTypes: true });
+        for (const item of items) {
+          const fullPath = path.join(dir, item.name);
+          const relativePath = relativePrefix ? `${relativePrefix}/${item.name}` : item.name;
+          
+          if (item.isDirectory()) {
+            await copyToFirebaseRecursive(fullPath, relativePath);
+          } else {
+            const ext = path.extname(item.name).toLowerCase();
+            const isBinary = ['.png', '.jpg', '.jpeg', '.gif', '.pdf', '.zip'].includes(ext);
+            const buffer = fs.readFileSync(fullPath);
+            if (isBinary) {
+              const mimeType = ext === '.pdf' ? 'application/pdf' : 'image/' + ext.replace('.', '');
+              await storage.saveBinaryFile(name, relativePath, buffer, mimeType);
+            } else {
+              await storage.saveFile(name, relativePath, buffer.toString('utf8'));
+            }
+          }
+        }
+      };
+      
+      await copyToFirebaseRecursive(sourcePath);
+    } else {
+      const targetPath = path.join(SKILLS_DIR, name);
+      if (fs.existsSync(targetPath)) {
+        return res.status(400).json({ error: 'Você já possui uma Skill instalada com este nome.' });
+      }
+      copyFolderRecursiveSync(sourcePath, targetPath);
+      
+      // Git Commit automático
+      await runGit(['add', name]);
+      await runGit(['commit', '-m', `Instalar template de Skill: ${name}`]);
+    }
     
     // Sincroniza triggers
-    syncAutomationTriggers();
+    await syncAutomationTriggers();
     
     res.json({ message: 'Template clonado com sucesso!', name });
   } catch (err) {
