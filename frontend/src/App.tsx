@@ -21,8 +21,8 @@ import { CreateSkillModal } from './components/CreateSkillModal';
 
 function App() {
   // Configurações do Sistema
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
-  const [backendUrl, setBackendUrl] = useState(() => localStorage.getItem('backend_url') || 'http://localhost:3001');
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || (import.meta.env.VITE_GEMINI_API_KEY as string) || '');
+  const [backendUrl, setBackendUrl] = useState(() => localStorage.getItem('backend_url') || (import.meta.env.VITE_API_URL as string) || 'http://localhost:3001');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Estados de Dados das Skills
