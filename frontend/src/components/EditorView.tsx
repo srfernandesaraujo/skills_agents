@@ -446,6 +446,24 @@ export const EditorView: React.FC<EditorViewProps> = ({
         }
         .text-purple { color: var(--accent-purple); }
         .text-cyan { color: var(--accent-cyan); }
+
+        @media (max-width: 768px) {
+          .editor-body {
+            flex-direction: column !important;
+          }
+          .editor-workspace {
+            border-right: none !important;
+            border-bottom: 1px solid var(--border-color);
+            height: 50% !important;
+            flex: none !important;
+            width: 100% !important;
+          }
+          .markdown-preview-pane {
+            height: 50% !important;
+            flex: none !important;
+            width: 100% !important;
+          }
+        }
       `}</style>
     </div>
   );

@@ -69,6 +69,11 @@ function App() {
   // Trigger para recarregar histórico Git
   const [gitRefreshTrigger, setGitRefreshTrigger] = useState(0);
 
+  // Estados de Loading e Responsividade
+  const [isSkillLoading, setIsSkillLoading] = useState(false);
+  const [isFileLoading, setIsFileLoading] = useState(false);
+  const [mobileSubTab, setMobileSubTab] = useState<'tree' | 'editor' | 'chat'>('tree');
+
   // Monitoramento do estado de login via Firebase Auth
   useEffect(() => {
     if (!isAuthEnabled || !auth) return;
@@ -137,6 +142,7 @@ function App() {
 
   // Carrega os detalhes de uma Skill (árvore de arquivos)
   const handleSelectSkill = async (skillName: string) => {
+    setIsSkillLoading(true);
     try {
       const response = await fetch(`${backendUrl}/api/skills/${skillName}`);
       if (!response.ok) throw new Error('Erro ao obter dados da skill');
@@ -145,14 +151,19 @@ function App() {
       // Mantém o arquivo selecionado aberto se pertencer à mesma skill, ou fecha
       setSelectedFile(null);
       setCentralTab('editor');
+      // No celular, vai automaticamente para o editor ao selecionar a skill
+      setMobileSubTab('editor');
     } catch (error) {
       alert('Erro ao abrir Skill: ' + error);
+    } finally {
+      setIsSkillLoading(false);
     }
   };
 
   // Abre um arquivo no Editor
   const handleSelectFile = async (filePath: string) => {
     if (!selectedSkill) return;
+    setIsFileLoading(true);
     try {
       const response = await fetch(
         `${backendUrl}/api/skills/${selectedSkill.name}/file?path=${encodeURIComponent(filePath)}`
@@ -166,8 +177,12 @@ function App() {
         mimeType: data.mimeType,
       });
       setCentralTab('editor');
+      // No celular, vai automaticamente para o editor ao abrir o arquivo
+      setMobileSubTab('editor');
     } catch (error) {
       alert('Erro ao carregar arquivo: ' + error);
+    } finally {
+      setIsFileLoading(false);
     }
   };
 
@@ -572,7 +587,36 @@ function App() {
       {/* Corpo Principal da Aplicação */}
       <main className="app-main-content">
         {activeTab === 'editor' ? (
-          <div className="editor-workspace-layout">
+          <div className={`editor-workspace-layout mobile-tab-${mobileSubTab}`}>
+            {/* Seletor de Abas para Celular */}
+            <div className="mobile-subtab-bar">
+              <button 
+                type="button"
+                className={`mobile-subtab-btn ${mobileSubTab === 'tree' ? 'active' : ''}`}
+                onClick={() => setMobileSubTab('tree')}
+              >
+                <FolderGit2 size={16} />
+                <span>Playbooks</span>
+              </button>
+              <button 
+                type="button"
+                className={`mobile-subtab-btn ${mobileSubTab === 'editor' ? 'active' : ''}`}
+                onClick={() => setMobileSubTab('editor')}
+                disabled={!selectedSkill}
+              >
+                <BookOpen size={16} />
+                <span>Editor</span>
+              </button>
+              <button 
+                type="button"
+                className={`mobile-subtab-btn ${mobileSubTab === 'chat' ? 'active' : ''}`}
+                onClick={() => setMobileSubTab('chat')}
+              >
+                <MessageSquare size={16} />
+                <span>Assistente</span>
+              </button>
+            </div>
+
             {/* Coluna 1: FileTree */}
             <aside className="layout-col-left">
               <FileTree
@@ -593,6 +637,14 @@ function App() {
 
             {/* Coluna 2: Editor Central */}
             <section className="layout-col-center">
+              {(isSkillLoading || isFileLoading) && (
+                <div className="workspace-loader-overlay">
+                  <div className="workspace-loader-card glass-panel">
+                    <Brain className="pulse text-purple" size={32} />
+                    <span>Carregando...</span>
+                  </div>
+                </div>
+              )}
               {selectedSkill ? (
                 <div className="central-workspace-container">
                   {/* Abas do Workspace Central */}
@@ -848,6 +900,72 @@ function App() {
           height: 100%;
           overflow: hidden;
         }
+        
+        /* Seletor Móvel de Abas */
+        .mobile-subtab-bar {
+          display: none;
+          grid-template-columns: repeat(3, 1fr);
+          background: rgba(13, 20, 35, 0.95);
+          border-bottom: 1px solid var(--border-color);
+          padding: 4px;
+          gap: 4px;
+          height: 48px;
+          align-items: center;
+          flex-shrink: 0;
+        }
+        .mobile-subtab-btn {
+          background: none;
+          border: none;
+          color: var(--text-secondary);
+          font-family: var(--font-sans);
+          font-size: 0.8rem;
+          font-weight: 500;
+          padding: 8px;
+          border-radius: 6px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          transition: all var(--transition-fast);
+        }
+        .mobile-subtab-btn:hover:not(:disabled) {
+          color: var(--text-primary);
+        }
+        .mobile-subtab-btn.active {
+          background: var(--bg-tertiary);
+          color: var(--accent-purple);
+        }
+        .mobile-subtab-btn:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
+        }
+
+        /* Overlay de Carregamento */
+        .workspace-loader-overlay {
+          position: absolute;
+          inset: 0;
+          background: rgba(8, 12, 20, 0.7);
+          backdrop-filter: blur(4px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 100;
+        }
+        .workspace-loader-card {
+          padding: 24px 40px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 12px;
+          border-color: rgba(139, 92, 246, 0.3) !important;
+        }
+        .workspace-loader-card span {
+          font-size: 0.9rem;
+          color: var(--text-primary);
+          font-weight: 500;
+        }
+
         .layout-col-left {
           height: 100%;
           overflow: hidden;
@@ -857,6 +975,7 @@ function App() {
           overflow: hidden;
           display: flex;
           flex-direction: column;
+          position: relative; /* Garante posicionamento do loader */
         }
         .layout-col-right {
           height: 100%;
@@ -864,6 +983,51 @@ function App() {
           display: flex;
           flex-direction: column;
           background: rgba(13, 20, 35, 0.2);
+        }
+
+        /* Regras de Responsividade Geral */
+        @media (max-width: 900px) {
+          .editor-workspace-layout {
+            grid-template-columns: 1fr !important;
+            grid-template-rows: 48px 1fr !important;
+            height: 100%;
+          }
+          .mobile-subtab-bar {
+            display: grid !important;
+          }
+          
+          /* Oculta/Exibe colunas conforme a aba ativa */
+          .mobile-tab-tree .layout-col-left { display: block !important; }
+          .mobile-tab-tree .layout-col-center { display: none !important; }
+          .mobile-tab-tree .layout-col-right { display: none !important; }
+
+          .mobile-tab-editor .layout-col-left { display: none !important; }
+          .mobile-tab-editor .layout-col-center { display: flex !important; }
+          .mobile-tab-editor .layout-col-right { display: none !important; }
+
+          .mobile-tab-chat .layout-col-left { display: none !important; }
+          .mobile-tab-chat .layout-col-center { display: none !important; }
+          .mobile-tab-chat .layout-col-right { display: flex !important; }
+          
+          .layout-col-left, .layout-col-center, .layout-col-right {
+            width: 100% !important;
+            height: 100% !important;
+          }
+          
+          /* Ajustes do Header */
+          .nav-item span {
+            display: none !important;
+          }
+          .nav-item {
+            padding: 8px 12px !important;
+          }
+          .app-header {
+            padding: 8px 12px !important;
+            gap: 8px;
+          }
+          .server-status-indicator {
+            display: none !important;
+          }
         }
         .right-panel-toggles {
           display: grid;
