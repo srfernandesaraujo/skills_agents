@@ -1,0 +1,61 @@
+# Roteiro completo de anamnese/consulta farmacêutica
+
+Roteiro de referência com exemplos de perguntas por seção. Use como guia de conteúdo — a ordem e as palavras exatas devem se adaptar ao fluxo real da conversa, nunca serem lidas mecanicamente.
+
+## 1. Acolhimento
+- "Bom dia/boa tarde, seja bem-vindo(a). Pode se sentar, fique à vontade."
+- "Antes de começarmos, como você prefere ser chamado(a)?"
+- Objetivo: baixar a tensão antes de qualquer coleta de dado. Nunca começar direto com "qual sua queixa?".
+
+## 2. Identificação e contexto
+- Nome, idade, ocupação (quando relevante à queixa/adesão), motivo da vinda hoje especificamente ("o que fez você vir até aqui hoje?").
+
+## 3. Queixa principal
+- "Me conta o que está te incomodando." (aberta, sempre primeiro)
+- Deixe o paciente falar sem interromper por pelo menos 60-90 segundos antes da primeira pergunta de aprofundamento.
+- Registre a queixa nas palavras do próprio paciente, não reformulada prematuramente em termos técnicos.
+
+## 4. História da doença/queixa atual (HDA) — mnemônico OPQRST/ALICIA
+- **Onset (início):** "Quando isso começou? Foi de repente ou foi piorando aos poucos?"
+- **Provocative/Palliative (o que piora/alivia):** "Tem alguma coisa que piora ou que alivia?"
+- **Quality (característica):** "Como é essa dor/sintoma — é em queimação, pontada, peso...?" (deixar o paciente escolher a palavra, não sugerir opções primeiro)
+- **Region/Radiation (localização/irradiação):** "Onde exatamente você sente isso? Vai para algum outro lugar?"
+- **Severity (intensidade):** "De 0 a 10, sendo 10 o pior que você já sentiu, quanto você diria que é?"
+- **Time (tempo/padrão):** "Isso é constante ou vai e volta? Tem hora do dia que é pior?"
+- Perguntas complementares: o que já tentou fazer para melhorar, se já teve isso antes, se procurou algum atendimento antes desta consulta.
+
+## 5. Medicamentos em uso (núcleo da competência farmacêutica)
+- "Quais remédios você toma atualmente, incluindo os que não foram receitados por médico?"
+- Para cada medicamento: nome (se não souber, pedir para descrever a caixa/cor/formato), dose, como toma de fato (não como está escrito na receita), horário, há quanto tempo usa, para que serve na visão do paciente.
+- "Alguma vez você já parou de tomar algum remédio por conta própria, ou tomou menos do que foi indicado? Pode me contar o que aconteceu?" (pergunta não-julgadora sobre adesão)
+- Fitoterápicos, chás, suplementos, vitaminas — perguntar explicitamente, pacientes frequentemente não consideram isso "remédio".
+- Uso de outros serviços de saúde (outros médicos, outras farmácias, convênio vs. SUS) para mapear possíveis duplicidades/interações não percebidas pelo próprio sistema de saúde.
+- Reações adversas já sentidas com medicamentos, mesmo que o paciente não tenha relacionado na hora.
+
+## 6. Antecedentes pessoais
+- Patológicos: doenças crônicas diagnosticadas, cirurgias, internações.
+- Alergias: medicamentosas (qual reação exatamente, para diferenciar alergia real de efeito colateral) e outras (alimentar, ambiental).
+
+## 7. Antecedentes familiares
+- Doenças relevantes à queixa atual em familiares de primeiro grau, quando pertinente (ex.: doenças cardiovasculares, diabetes, câncer).
+
+## 8. Hábitos de vida
+- Tabagismo, uso de álcool, atividade física, padrão alimentar, sono — perguntar com tom neutro e curioso, nunca moralizador.
+- "Como tem sido seu sono ultimamente?" em vez de "Você dorme bem?" (a segunda convida resposta monossilábica).
+
+## 9. Rastreio de sinais de alarme
+Sintomas/situações que, se presentes, mudam a conduta de "orientação farmacêutica" para "encaminhamento médico imediato" — variam por queixa, mas exemplos gerais: dor torácica associada a falta de ar, febre alta persistente, sangramento não explicado, perda de peso não intencional significativa, sinais de reação alérgica grave, sinais de risco à vida. Ao identificar, comunicar com clareza e sem alarmismo: "Pelo que você me contou, isso precisa ser avaliado por um médico com urgência — vou te orientar sobre isso."
+
+## 10. Avaliação de adesão (quando o paciente já usa medicação contínua)
+Perguntas no espírito do teste de Morisky-Green, sem citar o nome técnico ao paciente:
+- "Alguma vez você esqueceu de tomar seu remédio?"
+- "Em algum momento, quando estava se sentindo melhor, você parou de tomar?"
+- "Quando se sente pior tomando o remédio, você já chegou a parar por conta própria?"
+- "É difícil, às vezes, lembrar de tomar todos os remédios? Como você organiza isso no seu dia?"
+
+## 11. Fechamento
+- Resumo verbal do que foi entendido, oferecido ao paciente para correção: "Deixa eu resumir o que entendi, me corrija se eu errar em algo..."
+- Orientações claras e específicas (nunca genéricas tipo "beba água e descanse" sem contextualizar ao caso).
+- **Teach-back**: "Só para eu ter certeza que expliquei bem, você pode me dizer com suas palavras como vai tomar esse remédio a partir de agora?"
+- Encaminhamento, se aplicável, explicando o porquê.
+- Combinação de retorno/acompanhamento e abertura para dúvidas futuras: "Qualquer coisa, pode voltar aqui, tá bem?"

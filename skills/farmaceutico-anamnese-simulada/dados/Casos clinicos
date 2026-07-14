@@ -1,0 +1,48 @@
+# Banco de casos clínicos simulados
+
+Cada caso tem uma queixa aparente, uma camada oculta (só revelada se bem perguntado), e traços de personalidade para manter consistência. Ao usar no Modo Prática, revele a informação oculta progressivamente conforme a qualidade das perguntas do estudante — nunca de uma vez. No Modo Demonstração, use como base do paciente que o usuário vai representar (avise qual traço de personalidade ele deve manter).
+
+## Nível iniciante
+
+### Caso 1 — Dor de cabeça recorrente
+- **Aparente:** Paciente adulto, procura por dor de cabeça frequente, quer indicação de analgésico.
+- **Oculto (revelar só se explorado bem):** Toma analgésico quase todo dia há semanas (possível cefaleia por uso excessivo de medicação) — só conta isso se perguntado especificamente sobre frequência de uso, não se perguntado só "o que você toma".
+- **Personalidade:** Direto, um pouco apressado ("só quero um remédio bom"), relaxa e se abre se tratado com paciência.
+
+### Caso 2 — Renovação de receita de hipertensão
+- **Aparente:** Paciente idoso pedindo para "repetir o remédio de pressão de sempre".
+- **Oculto:** Está tomando a dose errada há um mês (confundiu duas caixas parecidas) — só revela isso se o farmacêutico perguntar como toma de fato, em vez de assumir que é como está prescrito.
+- **Personalidade:** Educado, um pouco confuso com nomes de remédios, se sente envergonhado do erro — precisa de abordagem sem julgamento para admitir.
+
+## Nível intermediário
+
+### Caso 3 — Paciente com baixa adesão por efeito colateral não relatado
+- **Aparente:** Paciente com diabetes tipo 2, controle glicêmico ruim nos últimos exames (se perguntado).
+- **Oculto:** Parou de tomar metformina por conta própria por causa de diarreia intensa, tem vergonha de mencionar o sintoma — só conta se a pergunta sobre efeitos colaterais for feita com naturalidade e sem pressa.
+- **Personalidade:** Evasivo em temas de sintomas gastrointestinais, tende a dizer "está tudo bem" primeiro; abre mais depois de duas ou três perguntas gentis.
+
+### Caso 4 — Cuidador de paciente idoso
+- **Aparente:** Filha(o) que cuida da mãe/pai idoso, vem buscar orientação sobre os remédios dela.
+- **Oculto:** Sobrecarga do cuidador — se perguntado sobre como está sendo cuidar da mãe/pai, revela cansaço e dificuldade de organizar os horários dos remédios (relevante para a adesão do paciente real).
+- **Personalidade:** Focado em "resolver logo" para o familiar, evita falar de si mesmo a menos que seja explicitamente convidado.
+
+## Nível avançado
+
+### Caso 5 — Paciente hostil/desconfiado do sistema de saúde
+- **Aparente:** Paciente vem com queixa de dor persistente, já foi a vários atendimentos sem solução, chega irritado.
+- **Oculto:** A raiz da desconfiança é uma experiência anterior de não ter sido ouvido em outro atendimento — só amolece se o farmacêutico validar a frustração antes de tentar coletar dados.
+- **Personalidade:** Respostas curtas e ríspidas no início ("já contei isso mil vezes"), se o estudante reagir defensivamente ou apressar, fecha-se mais; se validado, cede.
+
+### Caso 6 — Sinal de alarme escondido em queixa banal
+- **Aparente:** Paciente pede algo para "azia".
+- **Oculto:** Ao explorar bem a queixa (localização, irradiação, fatores associados), aparecem sinais de alerta cardiovascular (dor que irradia para o braço, associada a falta de ar leve ao esforço) — só aparece se o estudante não aceitar "azia" como diagnóstico do próprio paciente e investigar a queixa com o roteiro OPQRST completo.
+- **Personalidade:** Minimiza os próprios sintomas ("deve ser só o café"), não vai mencionar os sinais de alarme a menos que perguntado diretamente sobre eles.
+
+### Caso 7 — Paciente evasivo sobre saúde mental
+- **Aparente:** Pede algo para "insônia".
+- **Oculto:** Insônia é sintoma de um quadro de ansiedade/estresse mais amplo, possivelmente ligado a uma situação de vida difícil — só revela se o farmacêutico perguntar sobre o contexto de vida com genuína curiosidade, sem pressa de ir direto para "que remédio para dormir".
+- **Personalidade:** Tende a minimizar ("é só estresse mesmo, nada demais"), precisa sentir segurança para se abrir mais.
+
+## Como gerar novos casos
+
+Se nenhum caso do banco encaixar no pedido do usuário, gere um novo seguindo a mesma estrutura: queixa aparente + camada oculta relevante (clínica ou comunicacional) revelada apenas com boa técnica + traço de personalidade consistente. Evite casos onde a informação oculta é revelada só com sorte/insistência mecânica — ela deve recompensar especificamente escuta ativa, perguntas abertas e ausência de julgamento, que é o que esta skill quer treinar.

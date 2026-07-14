@@ -1,0 +1,21 @@
+{
+  "name": "ai-skills-manager",
+  "version": "1.0.0",
+  "description": "Criação e Gestão de AI Skills",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "install-all": "npm install && cd frontend && npm install",
+    "build-frontend": "cd frontend && npm run build"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.12",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "node-cron": "^4.6.0"
+  }
+}
