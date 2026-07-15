@@ -1237,7 +1237,40 @@ function parseToolCall(cleanedReply) {
   return null;
 }
 
+// Helper para realizar busca vetorial por similaridade de cosseno nas memórias do Firebase
+function searchMemoriesInList(memoriesList, queryEmbedding, topK = 3, threshold = 0.4) {
+  function cosineSimilarity(vecA, vecB) {
+    if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < vecA.length; i++) {
+      dotProduct += vecA[i] * vecB[i];
+      normA += vecA[i] * vecA[i];
+      normB += vecB[i] * vecB[i];
+    }
+    if (normA === 0 || normB === 0) return 0;
+    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  }
+
+  const results = memoriesList.map(m => {
+    const similarity = cosineSimilarity(queryEmbedding, m.embedding);
+    return {
+      id: m.id,
+      text: m.text,
+      timestamp: m.timestamp,
+      similarity
+    };
+  });
+
+  return results
+    .filter(r => r.similarity >= threshold)
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, topK);
+}
+
 // --- MOTOR DE EXECUÇÃO DO AGENTE ---
+
 
 
 app.post('/api/agent/chat', async (req, res) => {
@@ -1449,7 +1482,10 @@ Se nenhuma skill se aplicar ao pedido do usuário, responda com needsSkill: fals
       let matched = [];
       if (storage.useFirebase) {
         const queryEmbedding = await getGeminiEmbedding(lastUserMessage || 'Analise o arquivo.', actualApiKey);
-        matched = await storage.searchMemories(skillToUse, queryEmbedding, 3, 0.45);
+        const memoriesList = await storage.getMemories(skillToUse);
+        if (memoriesList && memoriesList.length > 0) {
+          matched = searchMemoriesInList(memoriesList, queryEmbedding, 3, 0.45);
+        }
       } else {
         const skillMemories = vectorDB.getMemories(skillToUse);
         if (skillMemories && skillMemories.length > 0) {
@@ -2148,7 +2184,10 @@ async function runBackgroundExecution(job) {
       let matched = [];
       if (storage.useFirebase) {
         const queryEmbedding = await getGeminiEmbedding(lastUserMessage || 'Analise o payload.', actualApiKey);
-        matched = await storage.searchMemories(job.skillName, queryEmbedding, 3, 0.45);
+        const memoriesList = await storage.getMemories(job.skillName);
+        if (memoriesList && memoriesList.length > 0) {
+          matched = searchMemoriesInList(memoriesList, queryEmbedding, 3, 0.45);
+        }
       } else {
         const skillMemories = vectorDB.getMemories(job.skillName);
         if (skillMemories && skillMemories.length > 0) {
