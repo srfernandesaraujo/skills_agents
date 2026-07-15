@@ -1063,6 +1063,7 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
           height: 100%;
           overflow: hidden;
           flex-shrink: 0;
+          min-height: 0;
         }
         .btn-new-chat {
           margin: 12px 16px;
@@ -1179,6 +1180,7 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
           border-right: 1px solid var(--border-color);
           position: relative;
           background: rgba(8, 12, 20, 0.6);
+          min-height: 0;
         }
         .chat-pane-header {
           display: flex;
@@ -1491,6 +1493,7 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
           overflow-y: auto;
           height: 100%;
           max-height: 100%;
+          min-height: 0;
         }
         .sidebar-section-header {
           border-bottom: 1px solid var(--border-color);
