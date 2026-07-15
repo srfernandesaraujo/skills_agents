@@ -391,6 +391,27 @@ app.get('/api/config/status', async (req, res) => {
   }
 });
 
+// GET /api/config - Carrega as configurações (somente admin)
+app.get('/api/config', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const key = await getLastApiKey();
+    res.json({ apiKey: key });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao ler configurações: ' + error.message });
+  }
+});
+
+// POST /api/config - Salva as configurações centralizadas (somente admin)
+app.post('/api/config', authMiddleware, adminMiddleware, async (req, res) => {
+  const { apiKey } = req.body;
+  try {
+    await saveLastApiKey(apiKey);
+    res.json({ message: 'Configurações salvas no servidor com sucesso!' });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao salvar no servidor: ' + error.message });
+  }
+});
+
 // 1. Listar todas as Skills
 app.get('/api/skills', async (req, res) => {
   try {

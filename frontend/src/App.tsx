@@ -139,6 +139,22 @@ function App() {
       if (!response.ok) throw new Error('Não foi possível se conectar ao servidor');
       const data = await response.json();
       setSkills(data);
+
+      // Se for o administrador, preenche a chave de API local obtendo-a do banco do servidor
+      if (user && user.email === 'srfernandesaraujo@gmail.com') {
+        try {
+          const configRes = await fetch(`${backendUrl}/api/config`);
+          if (configRes.ok) {
+            const configData = await configRes.json();
+            if (configData.apiKey) {
+              setApiKey(configData.apiKey);
+              localStorage.setItem('gemini_api_key', configData.apiKey);
+            }
+          }
+        } catch (err) {
+          console.warn('Não foi possível sincronizar chave do admin com o servidor:', err);
+        }
+      }
     } catch (error) {
       console.error('Erro ao conectar ao backend:', error);
     }
@@ -518,12 +534,30 @@ function App() {
     }
   };
 
-  const handleSaveSettings = (newKey: string, newUrl: string) => {
+  const handleSaveSettings = async (newKey: string, newUrl: string) => {
     setApiKey(newKey);
     setBackendUrl(newUrl);
     localStorage.setItem('gemini_api_key', newKey);
     localStorage.setItem('backend_url', newUrl);
-    alert('Configurações salvas e aplicadas!');
+    
+    try {
+      const response = await fetch(`${newUrl}/api/config`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ apiKey: newKey }),
+      });
+      if (response.ok) {
+        setHasGlobalApiKey(!!newKey);
+        alert('Configurações salvas localmente e sincronizadas com o servidor!');
+      } else {
+        throw new Error('Falha na resposta do servidor.');
+      }
+    } catch (e: any) {
+      console.warn('Erro ao sincronizar configurações com o servidor:', e);
+      alert('Configurações salvas localmente, mas não foi possível sincronizar com o servidor: ' + e.message);
+    }
   };
 
   if (!user) {
