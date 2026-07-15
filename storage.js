@@ -64,12 +64,17 @@ if (useFirebase) {
     } else if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
       let privateKey = process.env.FIREBASE_PRIVATE_KEY.trim();
       if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
-        privateKey = privateKey.slice(1, -1);
+        privateKey = privateKey.slice(1, -1).trim();
       }
       if (privateKey.startsWith("'") && privateKey.endsWith("'")) {
-        privateKey = privateKey.slice(1, -1);
+        privateKey = privateKey.slice(1, -1).trim();
       }
       privateKey = privateKey.replace(/\\n/g, '\n');
+
+      // Se a chave não possuir o cabeçalho/rodapé do PEM, adicionamos automaticamente
+      if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
+        privateKey = `-----BEGIN PRIVATE KEY-----\n${privateKey}\n-----END PRIVATE KEY-----`;
+      }
 
       initializeApp({
         credential: cert({
