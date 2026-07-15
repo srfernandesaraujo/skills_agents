@@ -1489,6 +1489,8 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
           gap: 14px;
           padding: 16px;
           overflow-y: auto;
+          height: 100%;
+          max-height: 100%;
         }
         .sidebar-section-header {
           border-bottom: 1px solid var(--border-color);
