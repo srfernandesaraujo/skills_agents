@@ -383,6 +383,7 @@ app.get('/api/config/status', async (req, res) => {
       hasGlobalApiKey: !!process.env.GEMINI_API_KEY || !!dbApiKey,
       useFirebase: storage.useFirebase,
       firebaseInitialized: storage.isFirebaseInitialized(),
+      firebaseInitError: storage.getFirebaseInitError(),
       envCheck: {
         hasProjectId: !!process.env.FIREBASE_PROJECT_ID,
         hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
@@ -395,6 +396,7 @@ app.get('/api/config/status', async (req, res) => {
       hasGlobalApiKey: !!process.env.GEMINI_API_KEY,
       useFirebase: storage.useFirebase,
       firebaseInitialized: storage.isFirebaseInitialized(),
+      firebaseInitError: storage.getFirebaseInitError(),
       envCheck: {
         hasProjectId: !!process.env.FIREBASE_PROJECT_ID,
         hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,

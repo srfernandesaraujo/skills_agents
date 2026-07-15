@@ -33,6 +33,7 @@ export const useFirebase = process.env.USE_FIREBASE === 'true';
 
 let db = null;
 let bucket = null;
+let firebaseInitError = null;
 
 export function getDb() {
   return db;
@@ -44,6 +45,10 @@ export function getBucket() {
 
 export function isFirebaseInitialized() {
   return getApps().length > 0;
+}
+
+export function getFirebaseInitError() {
+  return firebaseInitError;
 }
 
 if (useFirebase) {
@@ -68,6 +73,7 @@ if (useFirebase) {
       console.log('Firebase initialized via environment variables');
     } else {
       console.warn('Firebase configuration missing. Falling back to local storage.');
+      firebaseInitError = 'Credenciais ausentes no ambiente.';
       db = null;
       bucket = null;
     }
@@ -78,6 +84,7 @@ if (useFirebase) {
     }
   } catch (err) {
     console.error('Failed to initialize Firebase. Falling back to local storage:', err);
+    firebaseInitError = err.message || err.toString();
   }
 }
 
