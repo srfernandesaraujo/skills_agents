@@ -381,12 +381,26 @@ app.get('/api/config/status', async (req, res) => {
     const dbApiKey = await getLastApiKey();
     res.json({
       hasGlobalApiKey: !!process.env.GEMINI_API_KEY || !!dbApiKey,
-      useFirebase: storage.useFirebase
+      useFirebase: storage.useFirebase,
+      firebaseInitialized: storage.isFirebaseInitialized(),
+      envCheck: {
+        hasProjectId: !!process.env.FIREBASE_PROJECT_ID,
+        hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
+        hasPrivateKey: !!process.env.FIREBASE_PRIVATE_KEY,
+        hasStorageBucket: !!process.env.FIREBASE_STORAGE_BUCKET
+      }
     });
   } catch (err) {
     res.json({
       hasGlobalApiKey: !!process.env.GEMINI_API_KEY,
-      useFirebase: storage.useFirebase
+      useFirebase: storage.useFirebase,
+      firebaseInitialized: storage.isFirebaseInitialized(),
+      envCheck: {
+        hasProjectId: !!process.env.FIREBASE_PROJECT_ID,
+        hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
+        hasPrivateKey: !!process.env.FIREBASE_PRIVATE_KEY,
+        hasStorageBucket: !!process.env.FIREBASE_STORAGE_BUCKET
+      }
     });
   }
 });

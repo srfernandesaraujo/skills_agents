@@ -42,6 +42,10 @@ export function getBucket() {
   return bucket;
 }
 
+export function isFirebaseInitialized() {
+  return getApps().length > 0;
+}
+
 if (useFirebase) {
   try {
     const serviceAccountPath = path.join(__dirname, 'firebase-service-account.json');
