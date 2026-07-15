@@ -376,11 +376,19 @@ function parseSkillMetadata(skillName) {
 // --- API ENDPOINTS ---
 
 // Endpoint de Status de Configuração Pública
-app.get('/api/config/status', (req, res) => {
-  res.json({
-    hasGlobalApiKey: !!process.env.GEMINI_API_KEY,
-    useFirebase: storage.useFirebase
-  });
+app.get('/api/config/status', async (req, res) => {
+  try {
+    const dbApiKey = await getLastApiKey();
+    res.json({
+      hasGlobalApiKey: !!process.env.GEMINI_API_KEY || !!dbApiKey,
+      useFirebase: storage.useFirebase
+    });
+  } catch (err) {
+    res.json({
+      hasGlobalApiKey: !!process.env.GEMINI_API_KEY,
+      useFirebase: storage.useFirebase
+    });
+  }
 });
 
 // 1. Listar todas as Skills
@@ -613,7 +621,7 @@ app.post('/api/skills/generate', authMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'Nome da Skill (Slug) é obrigatório.' });
   }
 
-  const actualApiKey = apiKey || process.env.GEMINI_API_KEY;
+  const actualApiKey = apiKey || process.env.GEMINI_API_KEY || await getLastApiKey();
   if (!actualApiKey) {
     return res.status(400).json({ error: 'Chave de API do Gemini é necessária para geração avançada por IA.' });
   }
@@ -936,8 +944,8 @@ app.post('/api/chat', async (req, res) => {
     return res.status(400).json({ error: 'Lista de mensagens é obrigatória.' });
   }
 
-  // Usa a chave enviada pela requisição, ou caso contrário, a do .env
-  const actualApiKey = apiKey || process.env.GEMINI_API_KEY;
+  // Usa a chave enviada pela requisição, ou caso contrário, a do .env ou a salva no banco de dados
+  const actualApiKey = apiKey || process.env.GEMINI_API_KEY || await getLastApiKey();
 
   if (!actualApiKey) {
     // Retorna resposta mockada de alta qualidade se não houver chave
@@ -1134,7 +1142,7 @@ app.post('/api/agent/chat', async (req, res) => {
     return res.status(400).json({ error: 'Mensagens são obrigatórias.' });
   }
 
-  const actualApiKey = apiKey || process.env.GEMINI_API_KEY;
+  const actualApiKey = apiKey || process.env.GEMINI_API_KEY || await getLastApiKey();
   if (actualApiKey) {
     saveLastApiKey(actualApiKey);
   }
