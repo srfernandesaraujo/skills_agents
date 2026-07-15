@@ -1187,7 +1187,58 @@ Para que a Skill gerada seja profissional, incrível e acima de qualquer expecta
   }
 });
 
+// Helper robusto para analisar e extrair chamadas de ferramentas de forma tolerante a erros
+function parseToolCall(cleanedReply) {
+  if (!cleanedReply) return null;
+  
+  let cleaned = cleanedReply.replace(/^```json/, '').replace(/```$/, '').trim();
+  
+  // Trata formato malformado com colchetes ["callTool": ... ] -> {"callTool": ... }
+  if (cleaned.startsWith('["callTool":') && cleaned.endsWith(']')) {
+    cleaned = '{' + cleaned.slice(1, -1) + '}';
+  }
+  
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) {
+      if (parsed.length > 0 && parsed[0].callTool) {
+        return parsed[0];
+      }
+    } else if (parsed && parsed.callTool) {
+      return parsed;
+    }
+  } catch (e) {
+    // Fallback robusto usando regex em caso de JSON malformado
+    try {
+      const callToolRegex = /"callTool"\s*:\s*"([^"]+)"/;
+      const argsRegex = /"args"\s*:\s*({[\s\S]+})/;
+      
+      const toolMatch = cleaned.match(callToolRegex);
+      const argsMatch = cleaned.match(argsRegex);
+      
+      if (toolMatch) {
+        const toolName = toolMatch[1];
+        let args = {};
+        if (argsMatch) {
+          try {
+            let argsStr = argsMatch[1];
+            if (argsStr.endsWith(']')) argsStr = argsStr.slice(0, -1);
+            args = JSON.parse(argsStr);
+          } catch (argsErr) {
+            console.error('Erro ao fazer parse dos args por regex:', argsErr);
+          }
+        }
+        return { callTool: toolName, args };
+      }
+    } catch (regexErr) {
+      console.error('Falha no parser fallback regex:', regexErr);
+    }
+  }
+  return null;
+}
+
 // --- MOTOR DE EXECUÇÃO DO AGENTE ---
+
 
 app.post('/api/agent/chat', async (req, res) => {
   const startTime = performance.now();
@@ -1554,38 +1605,20 @@ Sempre responda em Português do Brasil (pt-BR).`;
     }
 
     // Tenta fazer o parsing para ver se a IA solicitou execução de ferramenta (callTool)
-    let parsedResult = null;
-    try {
-      const cleanJson = cleanedReply.replace(/^```json/, '').replace(/```$/, '').trim();
-      parsedResult = JSON.parse(cleanJson);
-    } catch (e) {
-      // Fallback robusto de regex caso a IA retorne um JSON malformado (ex: com novas linhas cruas nas aspas)
-      let matched = false;
-      const cleanInput = cleanedReply.replace(/^```json/, '').replace(/```$/, '').trim();
-      
-      if (cleanInput.startsWith('{') && cleanInput.endsWith('}')) {
-        const replyRegex = /"reply"\s*:\s*"([\s\S]*?)"\s*}\s*$/;
-        const match = cleanInput.match(replyRegex);
-        if (match) {
-          let extracted = match[1].trim();
-          // Limpa possíveis escapes
-          extracted = extracted.replace(/\\"/g, '"').replace(/\\n/g, '\n');
-          parsedResult = { reply: extracted };
-          matched = true;
-        }
-      }
-      
-      if (!matched) {
-        parsedResult = { reply: cleanedReply };
-      }
-    }
+    let parsedResult = parseToolCall(cleanedReply);
 
     let finalReply = '';
+    let loopCount = 0;
+    const maxLoops = 8; // Limite de chamadas consecutivas de ferramentas
 
-    // Se o modelo solicitou execução de ferramenta:
-    if (parsedResult && parsedResult.callTool) {
-      const toolName = parsedResult.callTool;
-      const toolArgs = parsedResult.args || {};
+    let currentParsedResult = parsedResult;
+    let currentCleanedReply = cleanedReply;
+    let currentChatContents = [...chatContents];
+
+    while (currentParsedResult && currentParsedResult.callTool && loopCount < maxLoops) {
+      loopCount++;
+      const toolName = currentParsedResult.callTool;
+      const toolArgs = currentParsedResult.args || {};
 
       steps.push({ step: 'tool_executing', detail: `Invocando script Python: ${toolName}...` });
 
@@ -1626,6 +1659,9 @@ Sempre responda em Português do Brasil (pt-BR).`;
         if (fs.existsSync(tempArgsFile)) {
           fs.unlinkSync(tempArgsFile);
         }
+        if (tempScriptFile && fs.existsSync(tempScriptFile)) {
+          fs.unlinkSync(tempScriptFile);
+        }
       }
 
       steps.push({ 
@@ -1647,54 +1683,75 @@ Resultado de saída (stdout):
 ${toolStdout}
 ${toolStderr ? '\nLogs de Erros (stderr):\n' + toolStderr : ''}
 
-Por favor, analise a saída do script, apresente os resultados finais formatados ao usuário (tabelas, markdown, etc.) e informe que a execução do script local foi concluída.`;
+Por favor, analise a saída do script e continue o raciocínio. Se precisar rodar outro comando ou checagem do script para complementar a auditoria, faça a chamada correspondente usando o formato JSON { "callTool": ... }. Se todas as análises estiverem concluídas, apresente os resultados finais formatados (tabela markdown, parecer clínico, recomendações) conforme as orientações do playbook.`;
 
-      const updatedChatContents = [
-        ...chatContents,
-        { role: 'model', parts: [{ text: JSON.stringify(parsedResult) }] },
-        { role: 'user', parts: [{ text: systemFeedbackMsg }] }
-      ];
+      // Atualiza o histórico de mensagens para a próxima chamada
+      currentChatContents.push({ role: 'model', parts: [{ text: JSON.stringify(currentParsedResult) }] });
+      currentChatContents.push({ role: 'user', parts: [{ text: systemFeedbackMsg }] });
 
-      const secondResponse = await fetch(chatUrl, {
+      const response = await fetch(chatUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: updatedChatContents,
+          contents: currentChatContents,
           systemInstruction: { parts: [{ text: agentSystemInstruction }] }
         })
       });
 
-      if (!secondResponse.ok) {
-        throw new Error('Falha na resposta final após execução do script.');
+      if (!response.ok) {
+        throw new Error('Falha na resposta intermediária/final do agente após execução do script.');
       }
 
-      const secondData = await secondResponse.json();
-      if (secondData.usageMetadata) {
-        totalPromptTokens += secondData.usageMetadata.promptTokenCount || 0;
-        totalCompletionTokens += secondData.usageMetadata.candidatesTokenCount || 0;
-        totalTokensCount += secondData.usageMetadata.totalTokenCount || 0;
+      const chatData = await response.json();
+      if (chatData.usageMetadata) {
+        totalPromptTokens += chatData.usageMetadata.promptTokenCount || 0;
+        totalCompletionTokens += chatData.usageMetadata.candidatesTokenCount || 0;
+        totalTokensCount += chatData.usageMetadata.totalTokenCount || 0;
       }
 
-      const secondRawReply = secondData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const rawReply = chatData.candidates?.[0]?.content?.parts?.[0]?.text || '';
       
-      const secondThoughtMatch = secondRawReply.match(thoughtRegex);
-      if (secondThoughtMatch) {
-        trace.thoughtProcess = (trace.thoughtProcess ? trace.thoughtProcess + '\n' : '') + secondThoughtMatch[1].trim();
+      let thoughtProcess = '';
+      const thoughtMatch = rawReply.match(thoughtRegex);
+      if (thoughtMatch) {
+        thoughtProcess = thoughtMatch[1].trim();
+        trace.thoughtProcess = (trace.thoughtProcess ? trace.thoughtProcess + '\n' : '') + thoughtProcess;
       }
-      const cleanedSecondReply = secondRawReply.replace(thoughtRegex, '').trim();
-      
-      finalReply = cleanedSecondReply;
-      try {
-        const cleanJson = cleanedSecondReply.replace(/^```json/, '').replace(/```$/, '').trim();
-        const parsedSecond = JSON.parse(cleanJson);
-        finalReply = parsedSecond.reply || cleanedSecondReply;
-      } catch (e) {
-        // Usa o texto bruto
-      }
+      currentCleanedReply = rawReply.replace(thoughtRegex, '').trim();
 
-    } else {
-      finalReply = parsedResult.reply || cleanedReply;
+      // Tenta parsear a nova resposta para verificar se o agente quer chamar outra ferramenta
+      currentParsedResult = parseToolCall(currentCleanedReply);
     }
+
+    // Processamento do resultado final após o loop terminar (seja porque retornou texto plano ou atingiu o maxLoops)
+    if (currentParsedResult) {
+      finalReply = currentParsedResult.reply || currentCleanedReply;
+    } else {
+      // Se não for uma chamada de ferramenta válida, pode ser um JSON de texto ou texto plano bruto
+      try {
+        const cleanJson = currentCleanedReply.replace(/^```json/, '').replace(/```$/, '').trim();
+        const parsedSecond = JSON.parse(cleanJson);
+        finalReply = parsedSecond.reply || currentCleanedReply;
+      } catch (e) {
+        // Fallback do replyRegex em caso de JSON malformado
+        let matched = false;
+        const cleanInput = currentCleanedReply.replace(/^```json/, '').replace(/```$/, '').trim();
+        if (cleanInput.startsWith('{') && cleanInput.endsWith('}')) {
+          const replyRegex = /"reply"\s*:\s*"([\s\S]*?)"\s*}\s*$/;
+          const match = cleanInput.match(replyRegex);
+          if (match) {
+            let extracted = match[1].trim();
+            extracted = extracted.replace(/\\"/g, '"').replace(/\\n/g, '\n');
+            finalReply = extracted;
+            matched = true;
+          }
+        }
+        if (!matched) {
+          finalReply = currentCleanedReply;
+        }
+      }
+    }
+
 
     // --- ETAPA AUTO-INGESTÃO: Salva novas preferências dinamicamente no final ---
     if (finalReply) {
@@ -2190,29 +2247,22 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
     }
 
     const rawReply = chatData.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    
-    let thoughtProcess = '';
     const thoughtRegex = /<thought_process>([\s\S]*?)<\/thought_process>/i;
-    const thoughtMatch = rawReply.match(thoughtRegex);
-    if (thoughtMatch) {
-      thoughtProcess = thoughtMatch[1].trim();
-      trace.thoughtProcess = thoughtProcess;
-    }
-    const cleanedReply = rawReply.replace(thoughtRegex, '').trim();
-
-    let parsedResult = null;
-    try {
-      const cleanJson = cleanedReply.replace(/^```json/, '').replace(/```$/, '').trim();
-      parsedResult = JSON.parse(cleanJson);
-    } catch (e) {
-      parsedResult = { reply: cleanedReply };
-    }
+    
+    let parsedResult = parseToolCall(rawReply);
 
     let finalReply = '';
+    let loopCount = 0;
+    const maxLoops = 8; // Limite de chamadas consecutivas de ferramentas
 
-    if (parsedResult && parsedResult.callTool) {
-      const toolName = parsedResult.callTool;
-      const toolArgs = parsedResult.args || {};
+    let currentParsedResult = parsedResult;
+    let currentCleanedReply = rawReply.replace(thoughtRegex, '').trim();
+    let currentChatContents = [...chatContents, { role: 'model', parts: [{ text: rawReply }] }];
+
+    while (currentParsedResult && currentParsedResult.callTool && loopCount < maxLoops) {
+      loopCount++;
+      const toolName = currentParsedResult.callTool;
+      const toolArgs = currentParsedResult.args || {};
 
       steps.push({ step: 'tool_executing', detail: `Invocando script Python: ${toolName}...` });
 
@@ -2268,51 +2318,70 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
 Resultado de saída (stdout):
 ${toolStdout}
 ${toolStderr ? '\nLogs de Erros (stderr):\n' + toolStderr : ''}
-Formate a análise final em markdown para o relatório do webhook.`;
+Por favor, analise a saída do script e continue. Formate a análise final em markdown para o relatório do webhook quando tudo estiver concluído.`;
 
-      const updatedChatContents = [
-        ...chatContents,
-        { role: 'model', parts: [{ text: JSON.stringify(parsedResult) }] },
-        { role: 'user', parts: [{ text: systemFeedbackMsg }] }
-      ];
+      // Atualiza o histórico de mensagens para a próxima chamada
+      currentChatContents.push({ role: 'user', parts: [{ text: systemFeedbackMsg }] });
 
-      const secondResponse = await fetch(chatUrl, {
+      const response = await fetch(chatUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: updatedChatContents,
+          contents: currentChatContents,
           systemInstruction: { parts: [{ text: agentSystemInstruction }] }
         })
       });
 
-      if (!secondResponse.ok) {
-        throw new Error('Falha na resposta final após execução do script.');
+      if (!response.ok) {
+        throw new Error('Falha na resposta intermediária/final em background após execução do script.');
       }
 
-      const secondData = await secondResponse.json();
-      if (secondData.usageMetadata) {
-        totalPromptTokens += secondData.usageMetadata.promptTokenCount || 0;
-        totalCompletionTokens += secondData.usageMetadata.candidatesTokenCount || 0;
-        totalTokensCount += secondData.usageMetadata.totalTokenCount || 0;
+      const chatData = await response.json();
+      if (chatData.usageMetadata) {
+        totalPromptTokens += chatData.usageMetadata.promptTokenCount || 0;
+        totalCompletionTokens += chatData.usageMetadata.candidatesTokenCount || 0;
+        totalTokensCount += chatData.usageMetadata.totalTokenCount || 0;
       }
 
-      const secondRawReply = secondData.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      
-      const secondThoughtMatch = secondRawReply.match(thoughtRegex);
-      if (secondThoughtMatch) {
-        trace.thoughtProcess = (trace.thoughtProcess ? trace.thoughtProcess + '\n' : '') + secondThoughtMatch[1].trim();
+      const rawReply = chatData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      let thoughtProcess = '';
+      const thoughtMatch = rawReply.match(thoughtRegex);
+      if (thoughtMatch) {
+        thoughtProcess = thoughtMatch[1].trim();
+        trace.thoughtProcess = (trace.thoughtProcess ? trace.thoughtProcess + '\n' : '') + thoughtProcess;
       }
-      const cleanedSecondReply = secondRawReply.replace(thoughtRegex, '').trim();
-      
-      finalReply = cleanedSecondReply;
-      try {
-        const cleanJson = cleanedSecondReply.replace(/^```json/, '').replace(/```$/, '').trim();
-        const parsedSecond = JSON.parse(cleanJson);
-        finalReply = parsedSecond.reply || cleanedSecondReply;
-      } catch (e) {}
+      currentCleanedReply = rawReply.replace(thoughtRegex, '').trim();
 
+      // Tenta parsear a nova resposta para verificar se o agente quer chamar outra ferramenta
+      currentParsedResult = parseToolCall(currentCleanedReply);
+    }
+
+    // Processamento do resultado final em background
+    if (currentParsedResult) {
+      finalReply = currentParsedResult.reply || currentCleanedReply;
     } else {
-      finalReply = parsedResult.reply || cleanedReply;
+      try {
+        const cleanJson = currentCleanedReply.replace(/^```json/, '').replace(/```$/, '').trim();
+        const parsedSecond = JSON.parse(cleanJson);
+        finalReply = parsedSecond.reply || currentCleanedReply;
+      } catch (e) {
+        // Fallback do replyRegex em caso de JSON malformado
+        let matched = false;
+        const cleanInput = currentCleanedReply.replace(/^```json/, '').replace(/```$/, '').trim();
+        if (cleanInput.startsWith('{') && cleanInput.endsWith('}')) {
+          const replyRegex = /"reply"\s*:\s*"([\s\S]*?)"\s*}\s*$/;
+          const match = cleanInput.match(replyRegex);
+          if (match) {
+            let extracted = match[1].trim();
+            extracted = extracted.replace(/\\"/g, '"').replace(/\\n/g, '\n');
+            finalReply = extracted;
+            matched = true;
+          }
+        }
+        if (!matched) {
+          finalReply = currentCleanedReply;
+        }
+      }
     }
 
     const endTime = performance.now();
