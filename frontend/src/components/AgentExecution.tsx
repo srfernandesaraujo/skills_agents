@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   Send, Sparkles, Bot, User, Cpu, 
-  Database, RefreshCw, Play, Download, Paperclip, X, FileText, Eye
+  Database, RefreshCw, Play, Download, Paperclip, X, FileText, Eye,
+  Plus, MessageSquare, Trash2
 } from 'lucide-react';
 import type { SkillSummary, SkillDetail } from './FileTree';
 
@@ -45,6 +46,82 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  // Estados de Histórico de Conversas
+  const [conversations, setConversations] = useState<any[]>([]);
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+
+  const fetchConversations = async () => {
+    try {
+      setIsHistoryLoading(true);
+      const response = await fetch(`${backendUrl}/api/conversations`);
+      if (response.ok) {
+        const data = await response.json();
+        setConversations(data);
+      }
+    } catch (e) {
+      console.error('Erro ao buscar conversas no frontend:', e);
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchConversations();
+  }, [backendUrl]);
+
+  const handleSelectConversation = async (conversationId: string) => {
+    try {
+      setIsLoading(true);
+      const response = await fetch(`${backendUrl}/api/conversations/${conversationId}`);
+      if (response.ok) {
+        const data = await response.json();
+        setMessages(data.messages || []);
+        setCurrentConversationId(conversationId);
+        if (data.skillName && data.skillName !== 'general') {
+          setActiveSkillName(data.skillName);
+        } else {
+          setActiveSkillName(null);
+        }
+      }
+    } catch (e) {
+      console.error('Erro ao obter detalhes da conversa:', e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteConversation = async (e: React.MouseEvent, conversationId: string) => {
+    e.stopPropagation();
+    if (!window.confirm('Deseja realmente excluir esta conversa?')) return;
+    try {
+      const response = await fetch(`${backendUrl}/api/conversations/${conversationId}`, {
+        method: 'DELETE'
+      });
+      if (response.ok) {
+        setConversations(prev => prev.filter(c => c.id !== conversationId));
+        if (currentConversationId === conversationId) {
+          handleReset(true);
+        }
+      }
+    } catch (e) {
+      console.error('Erro ao excluir conversa:', e);
+    }
+  };
+
+  const groupConversationsBySkill = (list: any[]) => {
+    const groups: { [key: string]: any[] } = {};
+    for (const c of list) {
+      const key = c.skillName || 'general';
+      if (!groups[key]) {
+        groups[key] = [];
+      }
+      groups[key].push(c);
+    }
+    return groups;
+  };
+
   
   // Estado da Skill Ativa carregada no Agente
   const [activeSkillName, setActiveSkillName] = useState<string | null>(null);
@@ -207,7 +284,8 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
           apiKey,
           fileData: fileToSend?.base64 || null,
           fileMime: fileToSend?.mimeType || null,
-          fileName: fileToSend?.name || null
+          fileName: fileToSend?.name || null,
+          conversationId: currentConversationId
         }),
       });
 
@@ -236,6 +314,12 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
         setActiveSkillName(data.activeSkillName);
       }
 
+      // Se retornou um ID de conversa, atualiza e recarrega a lista lateral
+      if (data.conversationId) {
+        setCurrentConversationId(data.conversationId);
+        fetchConversations();
+      }
+
       // Adiciona mensagem da IA
       setMessages(prev => [
         ...prev,
@@ -261,14 +345,15 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
     }
   };
 
-  const handleReset = () => {
-    if (window.confirm('Tem certeza de que deseja resetar a sessão do agente? Isso apagará o histórico e descarregará a skill atual.')) {
+  const handleReset = (force: boolean = false) => {
+    if (force || window.confirm('Tem certeza de que deseja resetar a sessão do agente? Isso apagará o histórico da tela e descarregará a skill atual.')) {
       setMessages([]);
       setActiveSkillName(null);
       setActiveSkillDetail(null);
       setCurrentStep(null);
       setStepsLog([]);
       setToolOutput(null);
+      setCurrentConversationId(null);
     }
   };
 
@@ -400,6 +485,58 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
 
   return (
     <div className="agent-execution-layout">
+      {/* Coluna Esquerda: Histórico de Conversas */}
+      <aside className="agent-history-sidebar">
+        <div className="sidebar-section-header">
+          <h4>Conversas Recentes</h4>
+        </div>
+        <button 
+          className="btn btn-primary btn-new-chat" 
+          onClick={() => handleReset(true)}
+        >
+          <Plus size={14} style={{ marginRight: '6px' }} />
+          Nova Conversa
+        </button>
+
+        <div className="history-groups scrollbar-custom" style={{ flex: 1, overflowY: 'auto' }}>
+          {isHistoryLoading && conversations.length === 0 ? (
+            <p className="loading-text">Carregando histórico...</p>
+          ) : conversations.length === 0 ? (
+            <p className="empty-text">Nenhuma conversa recente.</p>
+          ) : (
+            Object.entries(groupConversationsBySkill(conversations)).map(([skillKey, list]: any) => {
+              const skillDetail = skills.find(s => s.name === skillKey);
+              const skillTitle = skillKey === 'general' ? 'Chat Geral' : (skillDetail?.title || skillKey);
+              return (
+                <div key={skillKey} className="history-group">
+                  <span className="history-group-label">{skillTitle}</span>
+                  <div className="history-items">
+                    {list.map((c: any) => (
+                      <div 
+                        key={c.id} 
+                        className={`history-item-row ${currentConversationId === c.id ? 'active' : ''}`}
+                        onClick={() => handleSelectConversation(c.id)}
+                      >
+                        <MessageSquare size={14} className="item-icon" />
+                        <span className="item-title" title={c.title}>{c.title}</span>
+                        <button 
+                          type="button"
+                          className="btn-delete-item"
+                          onClick={(e) => handleDeleteConversation(e, c.id)}
+                          title="Excluir conversa"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </aside>
+
       {/* Coluna Central: Chat do Agente */}
       <div 
         className={`agent-chat-pane ${isDragging ? 'dragging-active' : ''}`}
@@ -426,7 +563,7 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
               <p>O Agente roteará suas solicitações dinamicamente para as AI Skills locais.</p>
             </div>
           </div>
-          <button className="btn btn-secondary btn-sm" onClick={handleReset}>
+          <button className="btn btn-secondary btn-sm" onClick={() => handleReset(false)}>
             <RefreshCw size={14} />
             Resetar Sessão
           </button>
@@ -913,10 +1050,127 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
       <style>{`
         .agent-execution-layout {
           display: grid;
-          grid-template-columns: 1fr 340px;
+          grid-template-columns: 260px 1fr 340px;
           height: 100%;
           overflow: hidden;
           background: rgba(8, 12, 20, 0.4);
+        }
+        .agent-history-sidebar {
+          display: flex;
+          flex-direction: column;
+          border-right: 1px solid var(--border-color);
+          background: rgba(13, 20, 35, 0.5);
+          height: 100%;
+          overflow: hidden;
+          flex-shrink: 0;
+        }
+        .btn-new-chat {
+          margin: 12px 16px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: linear-gradient(135deg, var(--accent-purple), #7c3aed);
+          color: white;
+          border: none;
+          font-weight: 500;
+          font-size: 0.85rem;
+          padding: 8px 16px;
+          border-radius: 8px;
+          cursor: pointer;
+          transition: all var(--transition-fast);
+        }
+        .btn-new-chat:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+        }
+        .history-groups {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+          padding: 0 16px 16px 16px;
+        }
+        .history-group {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .history-group-label {
+          font-size: 0.7rem;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          color: var(--text-muted);
+          font-weight: 600;
+          padding-left: 4px;
+        }
+        .history-items {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+        .history-item-row {
+          display: flex;
+          align-items: center;
+          padding: 8px 10px;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: all var(--transition-fast);
+          position: relative;
+        }
+        .history-item-row:hover {
+          background: rgba(255, 255, 255, 0.05);
+        }
+        .history-item-row.active {
+          background: rgba(139, 92, 246, 0.15);
+          border: 1px solid rgba(139, 92, 246, 0.3);
+        }
+        .history-item-row .item-icon {
+          color: var(--text-muted);
+          margin-right: 8px;
+          flex-shrink: 0;
+        }
+        .history-item-row.active .item-icon {
+          color: var(--accent-purple);
+        }
+        .history-item-row .item-title {
+          font-size: 0.8rem;
+          color: var(--text-secondary);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          flex: 1;
+          padding-right: 20px;
+        }
+        .history-item-row.active .item-title {
+          color: var(--text-primary);
+          font-weight: 500;
+        }
+        .btn-delete-item {
+          position: absolute;
+          right: 6px;
+          background: none;
+          border: none;
+          color: var(--text-muted);
+          cursor: pointer;
+          opacity: 0;
+          transition: opacity var(--transition-fast);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 4px;
+          border-radius: 4px;
+        }
+        .btn-delete-item:hover {
+          color: var(--accent-pink);
+          background: rgba(255, 255, 255, 0.05);
+        }
+        .history-item-row:hover .btn-delete-item {
+          opacity: 1;
+        }
+        .loading-text, .empty-text {
+          font-size: 0.75rem;
+          color: var(--text-muted);
+          text-align: center;
+          padding-top: 12px;
         }
         .agent-chat-pane {
           display: flex;

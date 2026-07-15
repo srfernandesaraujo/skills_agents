@@ -1273,13 +1273,17 @@ function searchMemoriesInList(memoriesList, queryEmbedding, topK = 3, threshold 
 
 
 
-app.post('/api/agent/chat', async (req, res) => {
+app.post('/api/agent/chat', authMiddleware, async (req, res) => {
   const startTime = performance.now();
-  const { messages, activeSkillName, apiKey, fileData, fileMime, fileName } = req.body;
+  const { messages, activeSkillName, apiKey, fileData, fileMime, fileName, conversationId } = req.body;
 
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: 'Mensagens são obrigatórias.' });
   }
+
+  const userId = req.user.uid;
+  const activeConversationId = conversationId || 'chat_' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+
 
   const actualApiKey = apiKey || process.env.GEMINI_API_KEY || await getLastApiKey();
   if (actualApiKey) {
@@ -1455,11 +1459,19 @@ Se nenhuma skill se aplicar ao pedido do usuário, responda com needsSkill: fals
         total: totalTokensCount
       };
 
+      const finalMessages = [
+        ...messages,
+        { role: 'assistant', content: cleanedReply, trace }
+      ];
+      const autoTitle = messages[0]?.content ? (messages[0].content.slice(0, 40) + (messages[0].content.length > 40 ? '...' : '')) : 'Chat Geral';
+      await storage.saveConversation(activeConversationId, userId, 'general', autoTitle, finalMessages);
+
       return res.json({
         reply: cleanedReply,
         activeSkillName: null,
         steps,
-        trace
+        trace,
+        conversationId: activeConversationId
       });
     } catch (err) {
       return res.status(500).json({ error: 'Erro no chat genérico: ' + err.message });
@@ -1802,11 +1814,19 @@ Por favor, analise a saída do script e continue o raciocínio. Se precisar roda
       total: totalTokensCount
     };
 
+    const finalMessages = [
+      ...messages,
+      { role: 'assistant', content: finalReply, trace }
+    ];
+    const conversationTitle = messages[0]?.content ? (messages[0].content.slice(0, 40) + (messages[0].content.length > 40 ? '...' : '')) : 'Nova conversa';
+    await storage.saveConversation(activeConversationId, userId, skillToUse, conversationTitle, finalMessages);
+
     return res.json({
       reply: finalReply,
       activeSkillName: skillToUse,
       steps,
-      trace
+      trace,
+      conversationId: activeConversationId
     });
 
   } catch (error) {
@@ -1814,6 +1834,51 @@ Por favor, analise a saída do script e continue o raciocínio. Se precisar roda
     res.status(500).json({ error: 'Erro no motor de execução: ' + error.message });
   }
 });
+
+// GET /api/conversations - Listar conversas do usuário autenticado
+app.get('/api/conversations', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    const list = await storage.listConversations(userId);
+    res.json(list);
+  } catch (error) {
+    console.error('Erro ao listar conversas:', error);
+    res.status(500).json({ error: 'Erro ao listar conversas: ' + error.message });
+  }
+});
+
+// GET /api/conversations/:id - Obter conversa específica
+app.get('/api/conversations/:id', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    const conversationId = req.params.id;
+    const conversation = await storage.getConversation(conversationId, userId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversa não encontrada.' });
+    }
+    res.json(conversation);
+  } catch (error) {
+    console.error('Erro ao buscar conversa:', error);
+    res.status(500).json({ error: 'Erro ao buscar conversa: ' + error.message });
+  }
+});
+
+// DELETE /api/conversations/:id - Excluir conversa
+app.delete('/api/conversations/:id', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    const conversationId = req.params.id;
+    const success = await storage.deleteConversation(conversationId, userId);
+    if (!success) {
+      return res.status(404).json({ error: 'Conversa não encontrada.' });
+    }
+    res.json({ message: 'Conversa excluída com sucesso!' });
+  } catch (error) {
+    console.error('Erro ao excluir conversa:', error);
+    res.status(500).json({ error: 'Erro ao excluir conversa: ' + error.message });
+  }
+});
+
 
 // Função auxiliar de auto-ingestão de memórias em background (RAG de Longo Prazo)
 async function autoIngestMemory(lastUserMessage, assistantReply, skillName, apiKey, steps) {
@@ -2464,7 +2529,7 @@ async function syncAutomationTriggers() {
       for (const item of items) {
         if (item.name === '.git' || !item.isDirectory() || item.name === '.memory') continue;
         const playbookContent = fs.readFileSync(path.join(SKILLS_DIR, item.name, 'skill.md'), 'utf8');
-        const meta = parseSkillMetadataFromContent(item.name, playbookContent);
+        const meta = storage.parseSkillMetadataFromContent(item.name, playbookContent);
         skillsList.push({ name: item.name, ...meta });
       }
     }
@@ -2589,7 +2654,7 @@ app.post('/api/webhooks/:skillName', async (req, res) => {
         return res.status(404).json({ error: `Skill '${skillName}' não encontrada.` });
       }
       const playbookContent = fs.readFileSync(path.join(skillPath, 'skill.md'), 'utf8');
-      skill = { name: skillName, ...parseSkillMetadataFromContent(skillName, playbookContent) };
+      skill = { name: skillName, ...storage.parseSkillMetadataFromContent(skillName, playbookContent) };
     }
 
     if (!skill) {

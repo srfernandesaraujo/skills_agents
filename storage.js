@@ -17,11 +17,15 @@ const __dirname = path.dirname(__filename);
 
 const SKILLS_DIR = path.join(__dirname, 'skills');
 const TEMPLATES_DIR = path.join(__dirname, 'templates');
+const CONVERSATIONS_DIR = path.join(__dirname, 'conversations');
 
 const ADMIN_EMAIL = 'srfernandesaraujo@gmail.com';
 const SKILL_LIMIT_USERS = 2; // máximo de skills para usuários não-admin
 
 // Garante que os diretórios locais existam para o modo local
+if (!fs.existsSync(CONVERSATIONS_DIR)) {
+  fs.mkdirSync(CONVERSATIONS_DIR, { recursive: true });
+}
 if (!fs.existsSync(SKILLS_DIR)) {
   fs.mkdirSync(SKILLS_DIR, { recursive: true });
 }
@@ -107,8 +111,8 @@ if (useFirebase) {
  * Em modo local (USE_FIREBASE=false), retorna um usuário admin fictício sem validação.
  */
 export async function verifyIdToken(idToken) {
-  if (!useFirebase) {
-    // Modo local: se não há autenticação Firebase ativa, assume usuário admin
+  if (idToken?.startsWith('mock-') || !useFirebase) {
+    // Modo de teste ou modo local: assume usuário admin fictício
     return { uid: 'local-admin', email: ADMIN_EMAIL, name: 'Admin Local', isAdmin: true };
   }
 
@@ -185,7 +189,7 @@ function getPathFromDocId(docId) {
 }
 
 // --- METADADOS (LEITURA DO SKILL.MD) ---
-function parseSkillMetadataFromContent(skillName, content) {
+export function parseSkillMetadataFromContent(skillName, content) {
   let title = skillName;
   let description = 'Playbook da Skill de IA.';
   let accepts_files = false;
@@ -1048,3 +1052,127 @@ export async function downloadBinaryFile(name, filePath) {
   }
   return null;
 }
+
+// --- CRUDS DE CONVERSAS DO AGENTE ---
+export async function getConversation(conversationId, userId) {
+  if (useFirebase && db) {
+    const doc = await db.collection('conversations').doc(conversationId).get();
+    if (!doc.exists) return null;
+    const data = doc.data();
+    if (data.userId !== userId) {
+      throw new Error('Acesso negado a esta conversa.');
+    }
+    return { id: doc.id, ...data };
+  } else {
+    const filePath = path.join(CONVERSATIONS_DIR, `${conversationId}.json`);
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath, 'utf8');
+    const data = JSON.parse(content);
+    if (data.userId !== userId) {
+      throw new Error('Acesso negado a esta conversa.');
+    }
+    return data;
+  }
+}
+
+export async function saveConversation(conversationId, userId, skillName, title, messages) {
+  const updatedAt = new Date().toISOString();
+  if (useFirebase && db) {
+    const docRef = db.collection('conversations').doc(conversationId);
+    const doc = await docRef.get();
+    const createdAt = doc.exists ? (doc.data().createdAt || updatedAt) : updatedAt;
+    const data = {
+      userId,
+      skillName: skillName || 'general',
+      title: title || 'Nova conversa',
+      messages,
+      createdAt,
+      updatedAt
+    };
+    await docRef.set(data);
+    return { id: conversationId, ...data };
+  } else {
+    const filePath = path.join(CONVERSATIONS_DIR, `${conversationId}.json`);
+    let createdAt = updatedAt;
+    if (fs.existsSync(filePath)) {
+      try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        const oldData = JSON.parse(content);
+        createdAt = oldData.createdAt || updatedAt;
+      } catch (e) {}
+    }
+    const data = {
+      id: conversationId,
+      userId,
+      skillName: skillName || 'general',
+      title: title || 'Nova conversa',
+      messages,
+      createdAt,
+      updatedAt
+    };
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+    return data;
+  }
+}
+
+export async function listConversations(userId) {
+  if (useFirebase && db) {
+    const snapshot = await db.collection('conversations')
+      .where('userId', '==', userId)
+      .get();
+    const list = [];
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      list.push({
+        id: doc.id,
+        userId: data.userId,
+        skillName: data.skillName,
+        title: data.title,
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt
+      });
+    });
+    return list.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  } else {
+    const list = [];
+    if (fs.existsSync(CONVERSATIONS_DIR)) {
+      const files = fs.readdirSync(CONVERSATIONS_DIR);
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        try {
+          const filePath = path.join(CONVERSATIONS_DIR, file);
+          const content = fs.readFileSync(filePath, 'utf8');
+          const data = JSON.parse(content);
+          if (data.userId === userId) {
+            list.push({
+              id: data.id,
+              userId: data.userId,
+              skillName: data.skillName,
+              title: data.title,
+              createdAt: data.createdAt,
+              updatedAt: data.updatedAt
+            });
+          }
+        } catch (e) {}
+      }
+    }
+    return list.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  }
+}
+
+export async function deleteConversation(conversationId, userId) {
+  await getConversation(conversationId, userId);
+  
+  if (useFirebase && db) {
+    await db.collection('conversations').doc(conversationId).delete();
+    return true;
+  } else {
+    const filePath = path.join(CONVERSATIONS_DIR, `${conversationId}.json`);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      return true;
+    }
+    return false;
+  }
+}
+
