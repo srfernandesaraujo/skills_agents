@@ -41,9 +41,9 @@ function App() {
   // Define o backend URL padrão: localhost para desenvolvimento, ou Render para ambiente remoto/celular/tablet
   const [backendUrl, setBackendUrl] = useState(() => {
     const saved = localStorage.getItem('backend_url');
-    if (saved) return saved;
+    if (saved) return saved.trim().replace(/\/+$/, '');
     const envUrl = import.meta.env.VITE_API_URL as string;
-    if (envUrl) return envUrl;
+    if (envUrl) return envUrl.trim().replace(/\/+$/, '');
     
     // Se estiver rodando local no browser, aponta pro Node local. Caso contrário (celular/tablet/etc.), aponta pro Render
     const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
@@ -535,13 +535,14 @@ function App() {
   };
 
   const handleSaveSettings = async (newKey: string, newUrl: string) => {
+    const sanitizedUrl = newUrl.trim().replace(/\/+$/, '');
     setApiKey(newKey);
-    setBackendUrl(newUrl);
+    setBackendUrl(sanitizedUrl);
     localStorage.setItem('gemini_api_key', newKey);
-    localStorage.setItem('backend_url', newUrl);
+    localStorage.setItem('backend_url', sanitizedUrl);
     
     try {
-      const response = await fetch(`${newUrl}/api/config`, {
+      const response = await fetch(`${sanitizedUrl}/api/config`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -552,7 +553,9 @@ function App() {
         setHasGlobalApiKey(!!newKey);
         alert('Configurações salvas localmente e sincronizadas com o servidor!');
       } else {
-        throw new Error('Falha na resposta do servidor.');
+        const errData = await response.json().catch(() => null);
+        const errMsg = errData?.error || errData?.message || 'Erro desconhecido';
+        throw new Error(`Código ${response.status}: ${errMsg}`);
       }
     } catch (e: any) {
       console.warn('Erro ao sincronizar configurações com o servidor:', e);

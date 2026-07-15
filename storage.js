@@ -82,18 +82,23 @@ if (useFirebase) {
  * Em modo local (USE_FIREBASE=false), retorna um usuário admin fictício sem validação.
  */
 export async function verifyIdToken(idToken) {
-  if (!useFirebase || !idToken) {
+  if (!useFirebase) {
     // Modo local: se não há autenticação Firebase ativa, assume usuário admin
     return { uid: 'local-admin', email: ADMIN_EMAIL, name: 'Admin Local', isAdmin: true };
   }
 
+  if (!idToken) {
+    throw new Error('Token de autorização ausente.');
+  }
+
   try {
     const decodedToken = await getAuth().verifyIdToken(idToken);
+    const email = decodedToken.email || '';
     return {
       uid: decodedToken.uid,
-      email: decodedToken.email || '',
-      name: decodedToken.name || decodedToken.email || 'Usuário',
-      isAdmin: decodedToken.email === ADMIN_EMAIL,
+      email: email,
+      name: decodedToken.name || email || 'Usuário',
+      isAdmin: email.toLowerCase() === ADMIN_EMAIL.toLowerCase(),
     };
   } catch (err) {
     throw new Error('Token inválido ou expirado: ' + err.message);
