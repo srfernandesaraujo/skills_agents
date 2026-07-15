@@ -375,6 +375,14 @@ function parseSkillMetadata(skillName) {
 
 // --- API ENDPOINTS ---
 
+// Endpoint de Status de Configuração Pública
+app.get('/api/config/status', (req, res) => {
+  res.json({
+    hasGlobalApiKey: !!process.env.GEMINI_API_KEY,
+    useFirebase: storage.useFirebase
+  });
+});
+
 // 1. Listar todas as Skills
 app.get('/api/skills', async (req, res) => {
   try {

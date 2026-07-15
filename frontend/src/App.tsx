@@ -37,7 +37,20 @@ function App() {
 
   // Configurações do Sistema
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || (import.meta.env.VITE_GEMINI_API_KEY as string) || '');
-  const [backendUrl, setBackendUrl] = useState(() => localStorage.getItem('backend_url') || (import.meta.env.VITE_API_URL as string) || 'http://localhost:3001');
+  
+  // Define o backend URL padrão: localhost para desenvolvimento, ou Render para ambiente remoto/celular/tablet
+  const [backendUrl, setBackendUrl] = useState(() => {
+    const saved = localStorage.getItem('backend_url');
+    if (saved) return saved;
+    const envUrl = import.meta.env.VITE_API_URL as string;
+    if (envUrl) return envUrl;
+    
+    // Se estiver rodando local no browser, aponta pro Node local. Caso contrário (celular/tablet/etc.), aponta pro Render
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    return isLocalhost ? 'http://localhost:3001' : 'https://skills-agents-backend.onrender.com';
+  });
+
+  const [hasGlobalApiKey, setHasGlobalApiKey] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Estados de Dados das Skills
@@ -106,6 +119,17 @@ function App() {
 
   const loadSkills = async () => {
     try {
+      // Tenta obter o status da chave global do backend
+      try {
+        const configRes = await fetch(`${backendUrl}/api/config/status`);
+        if (configRes.ok) {
+          const configData = await configRes.json();
+          setHasGlobalApiKey(!!configData.hasGlobalApiKey);
+        }
+      } catch (err) {
+        console.warn('Não foi possível obter status de configuração do backend:', err);
+      }
+
       const response = await fetch(`${backendUrl}/api/skills`);
       if (response.status === 401) {
         // Token inválido ou expirado
@@ -745,7 +769,7 @@ function App() {
                   <ChatAssistant
                     messages={chatMessages}
                     isLoading={isChatLoading}
-                    apiKeyMissing={!apiKey}
+                    apiKeyMissing={!apiKey && !hasGlobalApiKey}
                     onSendMessage={handleSendMessage}
                     onCreateSkillFromChat={handleCreateSkillFromChat}
                   />
@@ -789,13 +813,14 @@ function App() {
       />
 
       {/* Modal de Criação Inteligente de Skills */}
-      <CreateSkillModal
+       <CreateSkillModal
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
         onSubmit={handleCreateSkillPremium}
         isLoading={isSkillGenerating}
         loadingStep={skillGenerationStep}
         apiKey={apiKey}
+        hasGlobalApiKey={hasGlobalApiKey}
       />
 
       <style>{`

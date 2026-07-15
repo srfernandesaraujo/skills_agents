@@ -16,6 +16,7 @@ interface CreateSkillModalProps {
   isLoading: boolean;
   loadingStep: string;
   apiKey: string;
+  hasGlobalApiKey?: boolean;
 }
 
 export const CreateSkillModal: React.FC<CreateSkillModalProps> = ({
@@ -25,6 +26,7 @@ export const CreateSkillModal: React.FC<CreateSkillModalProps> = ({
   isLoading,
   loadingStep,
   apiKey,
+  hasGlobalApiKey = false,
 }) => {
   const [name, setName] = useState('');
   const [title, setTitle] = useState('');
@@ -87,7 +89,7 @@ export const CreateSkillModal: React.FC<CreateSkillModalProps> = ({
           </div>
         ) : (
           <form onSubmit={handleFormSubmit} className="modal-form-body">
-            {!apiKey && (
+            {(!apiKey && !hasGlobalApiKey) && (
               <div className="warning-banner-container">
                 <p>⚠️ <strong>Chave de API do Gemini ausente:</strong> Por favor, cadastre sua chave de API nas Configurações (ícone de engrenagem) antes de gerar a Skill por IA.</p>
               </div>
@@ -187,7 +189,7 @@ export const CreateSkillModal: React.FC<CreateSkillModalProps> = ({
               <button type="button" className="btn btn-secondary" onClick={onClose}>
                 Cancelar
               </button>
-              <button type="submit" className="btn btn-primary" disabled={!name.trim() || !apiKey}>
+              <button type="submit" className="btn btn-primary" disabled={!name.trim() || (!apiKey && !hasGlobalApiKey)}>
                 Gerar com IA Premium
               </button>
             </div>
