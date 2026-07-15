@@ -39,6 +39,7 @@ interface FileTreeProps {
   onDeleteFile: (skillName: string, filePath: string) => void;
   onDeleteSkill: (skillName: string) => void;
   onExportSkill: (skillName: string) => void;
+  onPublishSkill: (skillName: string) => void;
   onUploadFiles: (skillName: string, folder: 'dados' | 'assets', files: FileList) => void;
   isAdmin: boolean;
 }
@@ -54,6 +55,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
   onDeleteFile,
   onDeleteSkill,
   onExportSkill,
+  onPublishSkill,
   onUploadFiles,
   isAdmin,
 }) => {
@@ -270,6 +272,14 @@ export const FileTree: React.FC<FileTreeProps> = ({
                     </div>
 
                     <div className="skill-header-actions" onClick={e => e.stopPropagation()}>
+                      <button 
+                        className="action-btn" 
+                        onClick={() => onPublishSkill(skill.name)}
+                        title="Publicar no Hub de Skills da Comunidade"
+                        style={{ color: 'var(--accent-cyan)' }}
+                      >
+                        <Sparkles size={14} />
+                      </button>
                       <button 
                         className="action-btn" 
                         onClick={() => onExportSkill(skill.name)}

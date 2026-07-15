@@ -31,9 +31,18 @@ export const TemplatesGallery: React.FC<TemplatesGalleryProps> = ({
   const [installedSuccessfully, setInstalledSuccessfully] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Estados do Hub da Comunidade
+  const [activeSubTab, setActiveSubTab] = useState<'templates' | 'hub'>('templates');
+  const [hubSkills, setHubSkills] = useState<any[]>([]);
+  const [loadingHub, setLoadingHub] = useState(false);
+
   useEffect(() => {
-    loadTemplates();
-  }, [backendUrl]);
+    if (activeSubTab === 'templates') {
+      loadTemplates();
+    } else {
+      loadHubSkills();
+    }
+  }, [backendUrl, activeSubTab]);
 
   const loadTemplates = async () => {
     try {
@@ -46,13 +55,41 @@ export const TemplatesGallery: React.FC<TemplatesGalleryProps> = ({
     }
   };
 
+  const loadHubSkills = async () => {
+    setLoadingHub(true);
+    setErrorMessage(null);
+    try {
+      const response = await fetch(`${backendUrl}/api/marketplace/skills`);
+      if (response.ok) {
+        setHubSkills(await response.json());
+      }
+    } catch (err) {
+      console.error('Erro ao carregar Hub:', err);
+      setErrorMessage('Não foi possível obter dados do Hub de Skills.');
+    } finally {
+      setLoadingHub(false);
+    }
+  };
+
   const handleInstallTemplate = async (templateName: string) => {
     setInstallingTemplate(templateName);
     setErrorMessage(null);
     try {
-      const response = await fetch(`${backendUrl}/api/templates/${templateName}/clone`, {
-        method: 'POST'
-      });
+      let response;
+      if (activeSubTab === 'hub') {
+        response = await fetch(`${backendUrl}/api/marketplace/clone`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ name: templateName })
+        });
+      } else {
+        response = await fetch(`${backendUrl}/api/templates/${templateName}/clone`, {
+          method: 'POST'
+        });
+      }
+      
       const data = await response.json();
       
       if (response.ok) {
@@ -60,7 +97,7 @@ export const TemplatesGallery: React.FC<TemplatesGalleryProps> = ({
         onSkillInstalled(); // Recarrega lista lateral
         setTimeout(() => setInstalledSuccessfully(null), 3000);
       } else {
-        setErrorMessage(data.error || 'Erro ao instalar template.');
+        setErrorMessage(data.error || 'Erro ao instalar item.');
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'Erro de rede ao conectar com o servidor.');
@@ -73,25 +110,47 @@ export const TemplatesGallery: React.FC<TemplatesGalleryProps> = ({
     return installedSkills.some(s => s.name === name);
   };
 
-  // Extrai categorias únicas
-  const categories = ['todos', ...Array.from(new Set(templates.map(t => t.category)))];
+  const itemsToDisplay = activeSubTab === 'templates' ? templates : hubSkills;
 
-  // Filtra templates
-  const filteredTemplates = templates.filter(t => {
-    const matchesCategory = filterCategory === 'todos' || t.category === filterCategory;
-    const matchesQuery = t.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                         t.description.toLowerCase().includes(searchQuery.toLowerCase());
+  // Extrai categorias únicas
+  const categories = ['todos', ...Array.from(new Set(itemsToDisplay.map(t => t.category || 'Geral')))];
+
+  // Filtra templates/hub
+  const filteredTemplates = itemsToDisplay.filter(t => {
+    const matchesCategory = filterCategory === 'todos' || (t.category || 'Geral') === filterCategory;
+    const matchesQuery = (t.title || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
+                         (t.description || '').toLowerCase().includes(searchQuery.toLowerCase());
     return matchesCategory && matchesQuery;
   });
 
   return (
     <div className="templates-gallery-container scrollbar-custom">
       <div className="gallery-header-section">
-        <div className="header-title-wrapper">
-          <Compass size={24} className="text-purple pulse" />
-          <div>
-            <h3>Explorar Skills & Playbooks</h3>
-            <p>Selecione templates prontos desenvolvidos por especialistas para acelerar seus fluxos de trabalho e tomadas de decisão.</p>
+        <div className="header-title-wrapper" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <Compass size={24} className="text-purple pulse" />
+            <div>
+              <h3>Explorar Skills & Playbooks</h3>
+              <p>Instale playbooks prontos da comunidade ou templates oficiais para acelerar seus agentes.</p>
+            </div>
+          </div>
+
+          {/* Sub-abas de navegação premium */}
+          <div className="gallery-tabs-toggle" style={{ display: 'flex', background: 'rgba(0,0,0,0.25)', border: '1px solid var(--border-color)', borderRadius: '30px', padding: '2px' }}>
+            <button 
+              className={`gallery-tab-btn ${activeSubTab === 'templates' ? 'active' : ''}`}
+              onClick={() => { setActiveSubTab('templates'); setFilterCategory('todos'); }}
+              style={{ padding: '6px 14px', borderRadius: '30px', background: activeSubTab === 'templates' ? 'var(--accent-purple)' : 'none', border: 'none', color: '#fff', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', transition: 'all var(--transition-fast)' }}
+            >
+              Templates Oficiais
+            </button>
+            <button 
+              className={`gallery-tab-btn ${activeSubTab === 'hub' ? 'active' : ''}`}
+              onClick={() => { setActiveSubTab('hub'); setFilterCategory('todos'); }}
+              style={{ padding: '6px 14px', borderRadius: '30px', background: activeSubTab === 'hub' ? 'var(--accent-purple)' : 'none', border: 'none', color: '#fff', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', transition: 'all var(--transition-fast)' }}
+            >
+              Hub da Comunidade
+            </button>
           </div>
         </div>
 
@@ -129,7 +188,12 @@ export const TemplatesGallery: React.FC<TemplatesGalleryProps> = ({
         </div>
       )}
 
-      {filteredTemplates.length === 0 ? (
+      {loadingHub ? (
+        <div className="empty-gallery glass-panel">
+          <span className="spinner"></span>
+          <p>Carregando Skills do Hub da Comunidade...</p>
+        </div>
+      ) : filteredTemplates.length === 0 ? (
         <div className="empty-gallery glass-panel">
           <Layers size={36} className="text-muted" />
           <p>Nenhum template encontrado correspondente aos filtros.</p>
@@ -168,6 +232,12 @@ export const TemplatesGallery: React.FC<TemplatesGalleryProps> = ({
                 <div className="template-card-body">
                   <h4>{t.title}</h4>
                   <p>{t.description}</p>
+                  {(t as any).publisher && (
+                    <div style={{ marginTop: '8px', fontSize: '0.68rem', color: 'var(--text-muted)', display: 'flex', gap: '4px' }}>
+                      <span>Publicador:</span>
+                      <span className="text-cyan" style={{ fontWeight: 600 }}>{(t as any).publisher}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="template-card-footer">
@@ -195,7 +265,7 @@ export const TemplatesGallery: React.FC<TemplatesGalleryProps> = ({
                       ) : (
                         <>
                           <Download size={13} />
-                          Clonar Playbook
+                          {activeSubTab === 'hub' ? 'Importar do Hub' : 'Clonar Playbook'}
                         </>
                       )}
                     </button>

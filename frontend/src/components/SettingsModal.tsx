@@ -5,27 +5,40 @@ interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   apiKey: string;
+  sdkApiKey: string;
   backendUrl: string;
-  onSave: (apiKey: string, backendUrl: string) => void;
+  onSave: (apiKey: string, sdkApiKey: string, backendUrl: string) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
   apiKey: initialApiKey,
+  sdkApiKey: initialSdkApiKey,
   backendUrl: initialBackendUrl,
   onSave,
 }) => {
   const [apiKey, setApiKey] = useState(initialApiKey);
+  const [sdkApiKey, setSdkApiKey] = useState(initialSdkApiKey);
   const [backendUrl, setBackendUrl] = useState(initialBackendUrl);
   const [showKey, setShowKey] = useState(false);
+  const [showSdkKey, setShowSdkKey] = useState(false);
 
   if (!isOpen) return null;
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
-    onSave(apiKey.trim(), backendUrl.trim());
+    onSave(apiKey.trim(), sdkApiKey.trim(), backendUrl.trim());
     onClose();
+  };
+
+  const generateSdkKey = () => {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let result = 'sdk_';
+    for (let i = 0; i < 28; i++) {
+      result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setSdkApiKey(result);
   };
 
   return (
@@ -65,6 +78,43 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
             <span className="form-help">
               Necessária para a geração avançada de Skills por Inteligência Artificial no chat.
+            </span>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">
+              <Key size={16} className="text-cyan" />
+              Chave de API do SDK (Integração Externa)
+            </label>
+            <div className="input-with-action" style={{ display: 'flex', position: 'relative' }}>
+              <input
+                type={showSdkKey ? 'text' : 'password'}
+                className="input-text"
+                placeholder="Nenhuma chave do SDK gerada"
+                value={sdkApiKey}
+                onChange={(e) => setSdkApiKey(e.target.value)}
+                readOnly
+                style={{ flex: 1, paddingRight: '120px' }}
+              />
+              <button
+                type="button"
+                className="btn-icon-inside"
+                onClick={() => setShowSdkKey(!showSdkKey)}
+                style={{ right: '90px' }}
+              >
+                {showSdkKey ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={generateSdkKey}
+                style={{ position: 'absolute', right: 0, top: 0, bottom: 0, borderTopLeftRadius: 0, borderBottomLeftRadius: 0, padding: '0 12px', height: '100%', fontSize: '0.7rem' }}
+              >
+                Gerar Chave
+              </button>
+            </div>
+            <span className="form-help">
+              Use esta chave para autenticar chamadas de aplicações de terceiros no endpoint do SDK.
             </span>
           </div>
 

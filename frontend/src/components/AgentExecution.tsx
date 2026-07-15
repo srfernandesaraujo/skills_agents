@@ -38,6 +38,52 @@ interface AgentExecutionProps {
   backendUrl: string;
 }
 
+interface SideBySideDiffProps {
+  oldText: string;
+  newText: string;
+}
+
+const SideBySideDiff: React.FC<SideBySideDiffProps> = ({ oldText, newText }) => {
+  const oldLines = oldText.split('\n');
+  const newLines = newText.split('\n');
+
+  return (
+    <div className="side-by-side-diff-container" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', background: 'rgba(0, 0, 0, 0.4)', borderRadius: '8px', border: '1px solid var(--border-color)', height: '400px', overflow: 'hidden' }}>
+      {/* Coluna 1: Original */}
+      <div className="diff-column original-column" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <div style={{ padding: '8px 12px', background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', fontSize: '0.8rem', fontWeight: 600, borderBottom: '1px solid var(--border-color)' }}>Playbook Original (Antes)</div>
+        <div style={{ flex: 1, padding: '12px', overflowY: 'auto', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', whiteSpace: 'pre-wrap', lineHeight: '1.5' }}>
+          {oldLines.map((line, idx) => {
+            const isDifferent = !newLines.includes(line);
+            return (
+              <div key={idx} style={{ background: isDifferent ? 'rgba(239, 68, 68, 0.2)' : 'transparent', color: isDifferent ? '#fca5a5' : 'var(--text-secondary)', padding: '0 4px', borderLeft: isDifferent ? '3px solid #ef4444' : 'none' }}>
+                <span style={{ display: 'inline-block', width: '24px', color: 'var(--text-muted)', userSelect: 'none', marginRight: '8px' }}>{idx + 1}</span>
+                {line || ' '}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Coluna 2: Modificado */}
+      <div className="diff-column modified-column" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <div style={{ padding: '8px 12px', background: 'rgba(16, 185, 129, 0.1)', color: '#34d399', fontSize: '0.8rem', fontWeight: 600, borderBottom: '1px solid var(--border-color)' }}>Playbook Otimizado pela IA (Depois)</div>
+        <div style={{ flex: 1, padding: '12px', overflowY: 'auto', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', whiteSpace: 'pre-wrap', lineHeight: '1.5' }}>
+          {newLines.map((line, idx) => {
+            const isDifferent = !oldLines.includes(line);
+            return (
+              <div key={idx} style={{ background: isDifferent ? 'rgba(16, 185, 129, 0.15)' : 'transparent', color: isDifferent ? '#a7f3d0' : 'var(--text-secondary)', padding: '0 4px', borderLeft: isDifferent ? '3px solid #10b981' : 'none' }}>
+                <span style={{ display: 'inline-block', width: '24px', color: 'var(--text-muted)', userSelect: 'none', marginRight: '8px' }}>{idx + 1}</span>
+                {line || ' '}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const AgentExecution: React.FC<AgentExecutionProps> = ({
   skills,
   apiKey,
@@ -46,6 +92,19 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  // Estados de Human-in-the-Loop (Aprovação de Ferramentas) e Sandbox
+  const [pendingApproval, setPendingApproval] = useState<{ toolName: string; args: any } | null>(null);
+  const [requireApprovalGlobal, setRequireApprovalGlobal] = useState(() => localStorage.getItem('require_approval_global') === 'true');
+  const [useDockerSandbox, setUseDockerSandbox] = useState(() => localStorage.getItem('use_docker_sandbox') === 'true');
+
+  // Estados de Auto-Tuning (Refinamento de Playbooks)
+  const [tuningSkillName, setTuningSkillName] = useState<string | null>(null);
+  const [tuningFeedback, setTuningFeedback] = useState('');
+  const [tuningModalOpen, setTuningModalOpen] = useState(false);
+  const [tuningLoading, setTuningLoading] = useState(false);
+  const [tuningDiffData, setTuningDiffData] = useState<{ oldContent: string; newContent: string } | null>(null);
+  const [tuningContext, setTuningContext] = useState<{ question: string; reply: string } | null>(null);
 
   // Estados de Histórico de Conversas
   const [conversations, setConversations] = useState<any[]>([]);
@@ -248,14 +307,16 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
     }
   };
 
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if ((!inputValue.trim() && !attachedFile) || isLoading) return;
+  const handleSendMessage = async (e?: React.FormEvent, customText?: string) => {
+    if (e) e.preventDefault();
+    
+    const textToSend = customText !== undefined ? customText : inputValue.trim();
+    if ((!textToSend && !attachedFile) || isLoading) return;
 
     const userMsg: AgentMessage = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: inputValue.trim(),
+      content: textToSend,
       fileName: attachedFile?.name,
       fileMime: attachedFile?.mimeType,
       filePreview: attachedFile?.previewUrl || (attachedFile?.mimeType === 'application/pdf' ? 'pdf' : '')
@@ -267,6 +328,7 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
     setIsLoading(true);
     setToolOutput(null);
     setStepsLog([]);
+    setPendingApproval(null); // Limpa qualquer aprovação pendente ao iniciar nova interação
 
     // Salva o anexo atual localmente para enviar e limpa o estado
     const fileToSend = attachedFile;
@@ -285,7 +347,9 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
           fileData: fileToSend?.base64 || null,
           fileMime: fileToSend?.mimeType || null,
           fileName: fileToSend?.name || null,
-          conversationId: currentConversationId
+          conversationId: currentConversationId,
+          requireApprovalGlobal,
+          useDockerSandbox
         }),
       });
 
@@ -320,6 +384,11 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
         fetchConversations();
       }
 
+      // Verifica se o backend requer aprovação para rodar ferramenta
+      if (data.requiresApproval) {
+        setPendingApproval(data.requiresApproval);
+      }
+
       // Adiciona mensagem da IA
       setMessages(prev => [
         ...prev,
@@ -345,6 +414,93 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
     }
   };
 
+  const handleApproveTool = async (toolName: string, args: any) => {
+    if (isLoading) return;
+    setIsLoading(true);
+    setToolOutput(null);
+    setPendingApproval(null); // Limpa o estado pendente ao enviar
+
+    try {
+      const response = await fetch(`${backendUrl}/api/agent/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: messages.map(m => ({ role: m.role, content: m.content })),
+          activeSkillName,
+          apiKey,
+          fileData: null,
+          fileMime: null,
+          fileName: null,
+          conversationId: currentConversationId,
+          requireApprovalGlobal,
+          bypassApproval: { toolName, args },
+          useDockerSandbox
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Erro na conexão com o Motor do Agente');
+      }
+
+      const data = await response.json();
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      if (data.steps && data.steps.length > 0) {
+        setStepsLog(data.steps);
+        const lastStep = data.steps[data.steps.length - 1];
+        setCurrentStep(lastStep);
+        setTimeout(() => setCurrentStep(null), 5000);
+      }
+
+      if (data.activeSkillName) {
+        setActiveSkillName(data.activeSkillName);
+      }
+
+      if (data.conversationId) {
+        setCurrentConversationId(data.conversationId);
+        fetchConversations();
+      }
+
+      // Se o próximo passo também requerer aprovação
+      if (data.requiresApproval) {
+        setPendingApproval(data.requiresApproval);
+      }
+
+      setMessages(prev => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: data.reply,
+          trace: data.trace
+        },
+      ]);
+    } catch (err: any) {
+      setMessages(prev => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: `🚨 Erro na aprovação da ferramenta: ${err.message || err}`,
+        },
+      ]);
+      setCurrentStep({ step: 'error', detail: 'Falha na execução' });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRejectTool = (toolName: string) => {
+    setPendingApproval(null);
+    const rejectText = `Execução da ferramenta '${toolName}' rejeitada pelo usuário.`;
+    handleSendMessage(undefined, rejectText);
+  };
+
   const handleReset = (force: boolean = false) => {
     if (force || window.confirm('Tem certeza de que deseja resetar a sessão do agente? Isso apagará o histórico da tela e descarregará a skill atual.')) {
       setMessages([]);
@@ -354,6 +510,93 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
       setStepsLog([]);
       setToolOutput(null);
       setCurrentConversationId(null);
+    }
+  };
+
+  const handleOpenAutoTune = (msg: AgentMessage) => {
+    if (!activeSkillName) return;
+    
+    // Encontra a pergunta anterior do usuário para dar contexto
+    const msgIdx = messages.findIndex(m => m.id === msg.id);
+    const prevUserMsg = msgIdx > 0 ? messages[msgIdx - 1]?.content : '';
+
+    setTuningSkillName(activeSkillName);
+    setTuningContext({
+      question: prevUserMsg || '',
+      reply: msg.content
+    });
+    setTuningFeedback('');
+    setTuningDiffData(null);
+    setTuningModalOpen(true);
+  };
+
+  const handleTriggerAutoTune = async () => {
+    if (!tuningSkillName || !tuningFeedback.trim()) return;
+    setTuningLoading(true);
+    setTuningDiffData(null);
+
+    try {
+      const response = await fetch(`${backendUrl}/api/agent/auto-tune`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          skillName: tuningSkillName,
+          userFeedback: tuningFeedback,
+          interactionContext: tuningContext,
+          apiKey
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Falha ao gerar auto-tuning.');
+      }
+
+      const data = await response.json();
+      if (data.success) {
+        setTuningDiffData({
+          oldContent: data.oldContent,
+          newContent: data.newContent
+        });
+      }
+    } catch (e: any) {
+      alert('Erro ao otimizar playbook: ' + e.message);
+    } finally {
+      setTuningLoading(false);
+    }
+  };
+
+  const handleConfirmAutoTune = async (confirmed: boolean) => {
+    if (!tuningSkillName || !tuningDiffData) return;
+    setTuningLoading(true);
+
+    try {
+      const response = await fetch(`${backendUrl}/api/agent/auto-tune/confirm`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          skillName: tuningSkillName,
+          oldContent: tuningDiffData.oldContent,
+          confirmed
+        }),
+      });
+
+      if (response.ok) {
+        alert(confirmed ? 'Playbook atualizado e salvo com sucesso!' : 'Alterações descartadas.');
+        setTuningModalOpen(false);
+        setTuningDiffData(null);
+        
+        if (activeSkillName) {
+          fetchSkillDetail(activeSkillName);
+        }
+      }
+    } catch (e: any) {
+      alert('Erro ao confirmar alteração: ' + e.message);
+    } finally {
+      setTuningLoading(false);
     }
   };
 
@@ -382,6 +625,7 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
           skillName: activeSkillName,
           toolName,
           args: parsedArgs,
+          useDockerSandbox
         }),
       });
 
@@ -629,16 +873,31 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
               <div className="chat-bubble-container">
                 <span className="chat-author-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                   <span>{msg.role === 'assistant' ? 'Agente Inteligente' : 'Você'}</span>
-                  {msg.role === 'assistant' && msg.trace && (
-                    <button 
-                      type="button" 
-                      className="btn-inspect-message" 
-                      onClick={() => handleOpenInspector(msg.trace)}
-                      title="Abrir Rastro de Auditoria (Modo Shadowing)"
-                    >
-                      <Eye size={12} style={{ marginRight: '4px' }} />
-                      Inspetor
-                    </button>
+                  {msg.role === 'assistant' && (
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      {msg.trace && (
+                        <button 
+                          type="button" 
+                          className="btn-inspect-message" 
+                          onClick={() => handleOpenInspector(msg.trace)}
+                          title="Abrir Rastro de Auditoria (Modo Shadowing)"
+                        >
+                          <Eye size={12} style={{ marginRight: '4px' }} />
+                          Inspetor
+                        </button>
+                      )}
+                      {activeSkillName && (
+                        <button 
+                          type="button" 
+                          className="btn-inspect-message" 
+                          onClick={() => handleOpenAutoTune(msg)}
+                          title="Ajustar regras do playbook por IA com base nesta interação"
+                          style={{ borderColor: 'rgba(239, 68, 68, 0.4)', color: '#f87171' }}
+                        >
+                          👎 Corrigir Regra
+                        </button>
+                      )}
+                    </div>
                   )}
                 </span>
                 <div className="chat-bubble">
@@ -668,6 +927,53 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
               </div>
             </div>
           ))}
+
+          {pendingApproval && (
+            <div className="chat-row assistant tool-approval-row">
+              <div className="chat-avatar">
+                <Cpu size={16} className="text-cyan pulse" style={{ color: 'var(--accent-cyan)' }} />
+              </div>
+              <div className="chat-bubble-container">
+                <span className="chat-author-label" style={{ color: 'var(--accent-cyan)' }}>Permissão de Execução Requerida</span>
+                <div className="chat-bubble tool-approval-bubble glass-panel" style={{ border: '1px solid rgba(6, 182, 212, 0.3)', padding: '16px', borderRadius: '12px', background: 'rgba(8, 20, 32, 0.85)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div className="tool-approval-header" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <span className="tool-approval-icon" style={{ fontSize: '20px' }}>⚙️</span>
+                    <div>
+                      <h4 style={{ margin: 0, fontSize: '0.9rem', color: 'var(--text-primary)' }}>O agente deseja rodar o script:</h4>
+                      <code style={{ fontSize: '0.8rem', color: 'var(--accent-cyan)', background: 'rgba(0, 0, 0, 0.3)', padding: '2px 6px', borderRadius: '4px', fontFamily: 'var(--font-mono)' }}>{pendingApproval.toolName}</code>
+                    </div>
+                  </div>
+                  
+                  {pendingApproval.args && Object.keys(pendingApproval.args).length > 0 && (
+                    <div className="tool-approval-args" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span className="args-label" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Parâmetros de Entrada:</span>
+                      <pre style={{ margin: 0, padding: '10px', background: 'rgba(0, 0, 0, 0.4)', borderRadius: '6px', overflowX: 'auto' }}><code style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: '#a5f3fc' }}>{JSON.stringify(pendingApproval.args, null, 2)}</code></pre>
+                    </div>
+                  )}
+
+                  <div className="tool-approval-actions" style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                    <button 
+                      type="button" 
+                      className="btn btn-primary btn-approve-tool" 
+                      onClick={() => handleApproveTool(pendingApproval.toolName, pendingApproval.args)}
+                      style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', padding: '6px 14px', background: 'var(--accent-purple)', borderColor: 'var(--accent-purple)' }}
+                    >
+                      <Play size={12} />
+                      Aprovar Execução
+                    </button>
+                    <button 
+                      type="button" 
+                      className="btn btn-secondary btn-reject-tool" 
+                      onClick={() => handleRejectTool(pendingApproval.toolName)}
+                      style={{ fontSize: '0.8rem', padding: '6px 14px' }}
+                    >
+                      Rejeitar
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {isLoading && (
             <div className="chat-row assistant">
@@ -744,6 +1050,44 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
       <aside className="agent-context-sidebar">
         <div className="sidebar-section-header">
           <h4>Contexto do Agente</h4>
+        </div>
+
+        {/* Controle de Segurança */}
+        <div className="context-card glass-panel security-control-card" style={{ marginBottom: '12px', padding: '12px' }}>
+          <div className="card-header-with-icon" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', borderBottom: '1px solid rgba(255, 255, 255, 0.05)', paddingBottom: '6px' }}>
+            <Cpu size={14} className="text-purple" style={{ color: 'var(--accent-purple)' }} />
+            <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)' }}>Controle de Segurança</span>
+          </div>
+          <div className="security-toggle-container">
+            <label className="security-toggle-label" style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', cursor: 'pointer', fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: '1.3' }}>
+              <input 
+                type="checkbox"
+                checked={requireApprovalGlobal}
+                onChange={e => {
+                  const val = e.target.checked;
+                  setRequireApprovalGlobal(val);
+                  localStorage.setItem('require_approval_global', val ? 'true' : 'false');
+                }}
+                style={{ cursor: 'pointer', marginTop: '2px' }}
+              />
+              Exigir aprovação manual para scripts locais (Human-in-the-Loop)
+            </label>
+          </div>
+          <div className="security-toggle-container" style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid rgba(255, 255, 255, 0.05)' }}>
+            <label className="security-toggle-label" style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', cursor: 'pointer', fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: '1.3' }}>
+              <input 
+                type="checkbox"
+                checked={useDockerSandbox}
+                onChange={e => {
+                  const val = e.target.checked;
+                  setUseDockerSandbox(val);
+                  localStorage.setItem('use_docker_sandbox', val ? 'true' : 'false');
+                }}
+                style={{ cursor: 'pointer', marginTop: '2px' }}
+              />
+              Isolamento Total de scripts locais (Container Docker Sandbox)
+            </label>
+          </div>
         </div>
 
         {/* Status da Skill Ativa */}
@@ -921,17 +1265,66 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
           <div className="inspector-content scrollbar-custom">
             {inspectorTab === 'raciocinio' && (
               <div className="inspector-tab-pane animate-fade-in">
-                <h4>Cadeia de Pensamento (Chain of Thought)</h4>
-                <p className="tab-description">Processo analítico interno ocultado do chat comum:</p>
-                {selectedTrace.thoughtProcess ? (
-                  <div className="thought-process-block">
-                    {selectedTrace.thoughtProcess.split('\n').map((line: string, i: number) => (
-                      <p key={i} className="thought-line">{line}</p>
-                    ))}
+                <h4>Debugger de Raciocínio (Visual Thinking Trace)</h4>
+                <p className="tab-description">Linha do tempo diagramada de tomadas de decisão da IA:</p>
+                
+                <div className="visual-trace-timeline" style={{ display: 'flex', flexDirection: 'column', gap: '16px', position: 'relative', paddingLeft: '24px', marginTop: '16px' }}>
+                  {/* Linha vertical conectando os passos */}
+                  <div style={{ position: 'absolute', left: '7px', top: '8px', bottom: '8px', width: '2px', background: 'var(--border-color)' }}></div>
+
+                  {/* Passo 1: Entrada / Roteamento */}
+                  <div className="trace-step-item" style={{ position: 'relative' }}>
+                    <div style={{ position: 'absolute', left: '-23px', top: '3px', width: '12px', height: '12px', borderRadius: '50%', background: 'var(--accent-purple)', border: '2px solid var(--bg-primary)' }}></div>
+                    <h5 style={{ margin: '0 0 4px 0', fontSize: '0.85rem', color: 'var(--text-primary)' }}>1. Entrada e Roteamento</h5>
+                    <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                      {selectedTrace.skillName 
+                        ? `A solicitação foi roteada para a Skill: ${selectedTrace.skillName}.` 
+                        : 'Executado no modo de Chat Geral (Roteamento Direto).'}
+                    </p>
+                    {selectedTrace.routingReason && (
+                      <div style={{ marginTop: '6px', padding: '6px 10px', background: 'rgba(0,0,0,0.2)', borderRadius: '4px', fontSize: '0.7rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                        "{selectedTrace.routingReason}"
+                      </div>
+                    )}
                   </div>
-                ) : (
-                  <p className="empty-trace-text">Nenhum raciocínio interno documentado nesta chamada.</p>
-                )}
+
+                  {/* Passo 2: Contexto Vetorial (RAG) */}
+                  <div className="trace-step-item" style={{ position: 'relative' }}>
+                    <div style={{ position: 'absolute', left: '-23px', top: '3px', width: '12px', height: '12px', borderRadius: '50%', background: selectedTrace.memories && selectedTrace.memories.length > 0 ? 'var(--accent-cyan)' : 'var(--text-muted)', border: '2px solid var(--bg-primary)' }}></div>
+                    <h5 style={{ margin: '0 0 4px 0', fontSize: '0.85rem', color: 'var(--text-primary)' }}>2. Contexto de Aprendizado e RAG</h5>
+                    <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                      {selectedTrace.memories && selectedTrace.memories.length > 0 
+                        ? `Recuperou ${selectedTrace.memories.length} preferências/memórias do banco de dados vetorial para guiar a resposta.` 
+                        : 'Nenhuma memória de conversações anteriores foi necessária.'}
+                    </p>
+                  </div>
+
+                  {/* Passo 3: Chamada de Ferramentas / Automações */}
+                  <div className="trace-step-item" style={{ position: 'relative' }}>
+                    <div style={{ position: 'absolute', left: '-23px', top: '3px', width: '12px', height: '12px', borderRadius: '50%', background: selectedTrace.tools && selectedTrace.tools.length > 0 ? '#eab308' : 'var(--text-muted)', border: '2px solid var(--bg-primary)' }}></div>
+                    <h5 style={{ margin: '0 0 4px 0', fontSize: '0.85rem', color: 'var(--text-primary)' }}>3. Execução de Ferramentas (Automações)</h5>
+                    <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                      {selectedTrace.tools && selectedTrace.tools.length > 0 
+                        ? `Foram executados ${selectedTrace.tools.length} scripts locais na sandbox durante o raciocínio.` 
+                        : 'Nenhuma automação local foi acionada para esta resposta.'}
+                    </p>
+                  </div>
+
+                  {/* Passo 4: Pensamento Interno */}
+                  <div className="trace-step-item" style={{ position: 'relative' }}>
+                    <div style={{ position: 'absolute', left: '-23px', top: '3px', width: '12px', height: '12px', borderRadius: '50%', background: 'var(--accent-green)', border: '2px solid var(--bg-primary)' }}></div>
+                    <h5 style={{ margin: '0 0 4px 0', fontSize: '0.85rem', color: 'var(--text-primary)' }}>4. Cadeia de Raciocínio (Chain of Thought)</h5>
+                    <div className="thought-process-block" style={{ marginTop: '8px' }}>
+                      {selectedTrace.thoughtProcess ? (
+                        selectedTrace.thoughtProcess.split('\n').map((line: string, i: number) => (
+                          <p key={i} className="thought-line" style={{ margin: '0 0 4px 0', fontSize: '0.75rem', lineHeight: '1.4' }}>{line}</p>
+                        ))
+                      ) : (
+                        <p className="empty-trace-text">Nenhum rastro cognitivo oculto gerado.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -1043,6 +1436,119 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Auto-Tuning (Ajuste inteligente de playbooks) */}
+      {tuningModalOpen && (
+        <div className="tuning-modal-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(8, 12, 20, 0.85)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '24px' }}>
+          <div className="tuning-modal-card glass-panel" style={{ width: '100%', maxWidth: '950px', background: 'rgba(13, 20, 35, 0.95)', border: '1px solid rgba(139, 92, 246, 0.3)', borderRadius: '12px', display: 'flex', flexDirection: 'column', maxHeight: '90vh', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 0 40px rgba(139, 92, 246, 0.15)' }}>
+            <div className="tuning-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid var(--border-color)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Cpu className="text-purple pulse" size={20} style={{ color: 'var(--accent-purple)' }} />
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>Corrigir Regra do Playbook (Auto-Tuning)</h3>
+                  <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-muted)' }}>Otimização automática do playbook via Gemini e versionamento Git</p>
+                </div>
+              </div>
+              <button 
+                type="button" 
+                onClick={() => {
+                  if (tuningDiffData) {
+                    if (window.confirm('Deseja descartar as alterações geradas antes de fechar?')) {
+                      handleConfirmAutoTune(false);
+                    }
+                  } else {
+                    setTuningModalOpen(false);
+                  }
+                }} 
+                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="tuning-body" style={{ flex: 1, overflowY: 'auto', padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              
+              {/* Contexto da Interação */}
+              {tuningContext && (
+                <div style={{ background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '0.75rem' }}>
+                  <span style={{ fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: '6px' }}>Contexto da Falha (Interação do Chat):</span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', borderLeft: '2px solid var(--accent-purple)', paddingLeft: '8px' }}>
+                    <p style={{ margin: 0 }}><strong>Você:</strong> {tuningContext.question}</p>
+                    <p style={{ margin: 0, color: 'var(--text-secondary)' }}><strong>Agente:</strong> {tuningContext.reply}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Formulário de Crítica do Usuário (se ainda não gerou a diff) */}
+              {!tuningDiffData ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)' }}>Descreva qual foi o desvio e o que a IA deve fazer para corrigir:</label>
+                  <textarea
+                    rows={4}
+                    className="input-text"
+                    placeholder="Ex: Ela não deveria ter cobrado o valor do frete nesta etapa. Para clientes VIP, o frete é grátis. Corrija o playbook para refletir isso."
+                    value={tuningFeedback}
+                    onChange={e => setTuningFeedback(e.target.value)}
+                    style={{ width: '100%', resize: 'none', padding: '10px', fontSize: '0.8rem', borderRadius: '6px', background: 'rgba(0,0,0,0.3)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', fontFamily: 'var(--font-sans)' }}
+                  />
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>A IA analisará seu feedback e reescreverá a regra correspondente no arquivo `skill.md` gerando uma revisão temporária.</span>
+                </div>
+              ) : (
+                /* Visualizador Side-by-Side Diff */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)' }}>Compare as Alterações Propostas (Side-by-Side):</span>
+                  <SideBySideDiff oldText={tuningDiffData.oldContent} newText={tuningDiffData.newContent} />
+                </div>
+              )}
+            </div>
+
+            <div className="tuning-footer" style={{ padding: '16px 20px', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'flex-end', gap: '10px', background: 'rgba(0,0,0,0.1)' }}>
+              {!tuningDiffData ? (
+                <>
+                  <button 
+                    type="button" 
+                    className="btn btn-secondary" 
+                    onClick={() => setTuningModalOpen(false)}
+                    disabled={tuningLoading}
+                  >
+                    Cancelar
+                  </button>
+                  <button 
+                    type="button" 
+                    className="btn btn-primary" 
+                    onClick={handleTriggerAutoTune}
+                    disabled={tuningLoading || !tuningFeedback.trim()}
+                    style={{ background: 'var(--accent-purple)', borderColor: 'var(--accent-purple)' }}
+                  >
+                    {tuningLoading ? 'Otimizando Playbook...' : 'Gerar Otimização por IA'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button 
+                    type="button" 
+                    className="btn btn-secondary" 
+                    onClick={() => handleConfirmAutoTune(false)}
+                    disabled={tuningLoading}
+                    style={{ borderColor: '#ef4444', color: '#f87171' }}
+                  >
+                    Descartar Ajustes (Reverter)
+                  </button>
+                  <button 
+                    type="button" 
+                    className="btn btn-primary" 
+                    onClick={() => handleConfirmAutoTune(true)}
+                    disabled={tuningLoading}
+                    style={{ background: '#10b981', borderColor: '#10b981' }}
+                  >
+                    Confirmar Ajuste no Playbook
+                  </button>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}

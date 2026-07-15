@@ -37,6 +37,7 @@ function App() {
 
   // Configurações do Sistema
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || (import.meta.env.VITE_GEMINI_API_KEY as string) || '');
+  const [sdkApiKey, setSdkApiKey] = useState(() => localStorage.getItem('sdk_api_key') || '');
   
   // Define o backend URL padrão: localhost para desenvolvimento, ou Render para ambiente remoto/celular/tablet
   const [backendUrl, setBackendUrl] = useState(() => {
@@ -149,6 +150,10 @@ function App() {
             if (configData.apiKey) {
               setApiKey(configData.apiKey);
               localStorage.setItem('gemini_api_key', configData.apiKey);
+            }
+            if (configData.sdkApiKey) {
+              setSdkApiKey(configData.sdkApiKey);
+              localStorage.setItem('sdk_api_key', configData.sdkApiKey);
             }
           }
         } catch (err) {
@@ -405,6 +410,29 @@ function App() {
     window.open(`${backendUrl}/api/skills/${skillName}/export`, '_blank');
   };
 
+  // Publicar Skill no Hub
+  const handlePublishSkill = async (skillName: string) => {
+    if (!window.confirm(`Tem certeza de que deseja publicar a Skill '${skillName}' no Hub de Skills da Comunidade?`)) {
+      return;
+    }
+    
+    try {
+      const response = await fetch(`${backendUrl}/api/marketplace/publish`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skillName })
+      });
+      const data = await response.json();
+      if (response.ok) {
+        alert(data.message || 'Skill publicada com sucesso!');
+      } else {
+        throw new Error(data.error || 'Erro ao publicar.');
+      }
+    } catch (e: any) {
+      alert('Falha ao publicar Skill no Hub: ' + e.message);
+    }
+  };
+
   // Upload de arquivos
   const handleUploadFiles = async (skillName: string, folder: 'dados' | 'assets', files: FileList) => {
     const formData = new FormData();
@@ -534,11 +562,13 @@ function App() {
     }
   };
 
-  const handleSaveSettings = async (newKey: string, newUrl: string) => {
+  const handleSaveSettings = async (newKey: string, newSdkKey: string, newUrl: string) => {
     const sanitizedUrl = newUrl.trim().replace(/\/+$/, '');
     setApiKey(newKey);
+    setSdkApiKey(newSdkKey);
     setBackendUrl(sanitizedUrl);
     localStorage.setItem('gemini_api_key', newKey);
+    localStorage.setItem('sdk_api_key', newSdkKey);
     localStorage.setItem('backend_url', sanitizedUrl);
     
     try {
@@ -547,7 +577,7 @@ function App() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ apiKey: newKey }),
+        body: JSON.stringify({ apiKey: newKey, sdkApiKey: newSdkKey }),
       });
       if (response.ok) {
         setHasGlobalApiKey(!!newKey);
@@ -691,6 +721,7 @@ function App() {
                 onDeleteFile={handleDeleteFile}
                 onDeleteSkill={handleDeleteSkill}
                 onExportSkill={handleExportSkill}
+                onPublishSkill={handlePublishSkill}
                 onUploadFiles={handleUploadFiles}
                 isAdmin={user?.email === 'srfernandesaraujo@gmail.com'}
               />
@@ -845,6 +876,7 @@ function App() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         apiKey={apiKey}
+        sdkApiKey={sdkApiKey}
         backendUrl={backendUrl}
         onSave={handleSaveSettings}
       />

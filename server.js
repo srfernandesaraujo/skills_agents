@@ -20,6 +20,21 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Detecção de Docker disponível no sistema do usuário
+let isDockerAvailable = false;
+async function checkDockerAvailability() {
+  try {
+    // Executa uma checagem rápida para ver se o Docker daemon está ativo
+    await execPromise('docker info');
+    isDockerAvailable = true;
+    console.log('🐳 [SANDBOX] Docker detectado e ativo! Execuções em Sandbox isoladas disponíveis.');
+  } catch (err) {
+    isDockerAvailable = false;
+    console.log('⚠️ [SANDBOX] Docker não detectado ou inativo. Execuções em Sandbox utilizarão fallback por venv local.');
+  }
+}
+checkDockerAvailability();
+
 // Configuração do CORS
 app.use(cors());
 app.use(express.json());
@@ -429,7 +444,8 @@ app.get('/api/config/status', async (req, res) => {
 app.get('/api/config', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const key = await getLastApiKey();
-    res.json({ apiKey: key });
+    const sdkKey = await getSdkApiKey();
+    res.json({ apiKey: key, sdkApiKey: sdkKey });
   } catch (error) {
     res.status(500).json({ error: 'Erro ao ler configurações: ' + error.message });
   }
@@ -437,9 +453,10 @@ app.get('/api/config', authMiddleware, adminMiddleware, async (req, res) => {
 
 // POST /api/config - Salva as configurações centralizadas (somente admin)
 app.post('/api/config', authMiddleware, adminMiddleware, async (req, res) => {
-  const { apiKey } = req.body;
+  const { apiKey, sdkApiKey } = req.body;
   try {
-    await saveLastApiKey(apiKey);
+    if (apiKey !== undefined) await saveLastApiKey(apiKey);
+    if (sdkApiKey !== undefined) await saveSdkApiKey(sdkApiKey);
     res.json({ message: 'Configurações salvas no servidor com sucesso!' });
   } catch (error) {
     res.status(500).json({ error: 'Erro ao salvar no servidor: ' + error.message });
@@ -1269,13 +1286,199 @@ function searchMemoriesInList(memoriesList, queryEmbedding, topK = 3, threshold 
     .slice(0, topK);
 }
 
+// Helper para ler e processar o frontmatter YAML do playbook skill.md
+function parsePlaybookFrontmatter(playbookContent) {
+  const result = {
+    needs_approval: false,
+    restricted_tools: []
+  };
+  if (!playbookContent) return result;
+
+  const frontmatterRegex = /^---\r?\n([\s\S]*?)\r?\n---/;
+  const match = playbookContent.match(frontmatterRegex);
+  if (!match) return result;
+
+  const yamlText = match[1];
+  const lines = yamlText.split('\n');
+  
+  let currentKey = null;
+
+  for (let line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+
+    // Se for um item de lista tipo "- ferramenta.py"
+    if (trimmed.startsWith('-') && currentKey === 'restricted_tools') {
+      const toolName = trimmed.replace(/^-\s*/, '').replace(/^["']|["']$/g, '').trim();
+      if (toolName) {
+        result.restricted_tools.push(toolName);
+      }
+      continue;
+    }
+
+    const colonIndex = line.indexOf(':');
+    if (colonIndex !== -1) {
+      const key = line.substring(0, colonIndex).trim();
+      let val = line.substring(colonIndex + 1).trim();
+
+      // Remove aspas simples/duplas das pontas do valor
+      val = val.replace(/^["']|["']$/g, '');
+
+      if (key === 'needs_approval') {
+        result.needs_approval = (val.toLowerCase() === 'true');
+        currentKey = key;
+      } else if (key === 'restricted_tools') {
+        currentKey = key;
+        // Se for no formato inline JSON [tool1, tool2]
+        if (val.startsWith('[') && val.endsWith(']')) {
+          try {
+            const cleanedVal = val.replace(/'/g, '"');
+            result.restricted_tools = JSON.parse(cleanedVal);
+          } catch (e) {
+            console.error('Erro ao fazer parse de restricted_tools inline:', e);
+          }
+        }
+      } else {
+        currentKey = key;
+      }
+    }
+  }
+
+  return result;
+}
+
+// Executa um script Python em ambiente de sandbox (Docker ou venv local isolado)
+async function runPythonSandbox(skillName, scriptPath, tempArgsFile, useDocker) {
+  const canUseDocker = useDocker && isDockerAvailable;
+
+  if (canUseDocker) {
+    console.log(`🐳 [SANDBOX] Executando script no Docker para a skill: ${skillName}...`);
+    const absoluteScriptPath = path.resolve(scriptPath);
+    const absoluteArgsPath = path.resolve(tempArgsFile);
+
+    const containerScript = '/app/tool.py';
+    const containerArgs = '/app/args.json';
+
+    // Monta o script e os argumentos como volumes de leitura (ro)
+    const dockerCmd = `docker run --rm -v "${absoluteScriptPath}:${containerScript}:ro" -v "${absoluteArgsPath}:${containerArgs}:ro" python:3.10-slim python "${containerScript}" "${containerArgs}"`;
+
+    try {
+      const { stdout, stderr } = await execPromise(dockerCmd);
+      return { stdout, stderr, success: true };
+    } catch (cmdErr) {
+      return {
+        stdout: cmdErr.stdout || '',
+        stderr: cmdErr.stderr || cmdErr.message,
+        success: false
+      };
+    }
+  }
+
+  // Fallback: Execução em ambiente virtual local (venv) específico da Skill
+  console.log(`📦 [SANDBOX] Executando em ambiente virtual (venv) para a skill: ${skillName}...`);
+
+  const sandboxDir = storage.useFirebase 
+    ? path.join(process.cwd(), '.sandboxes', skillName) 
+    : path.join(SKILLS_DIR, skillName);
+
+  if (!fs.existsSync(sandboxDir)) {
+    fs.mkdirSync(sandboxDir, { recursive: true });
+  }
+
+  const venvDir = path.join(sandboxDir, '.venv');
+  const isWindows = process.platform === 'win32';
+  const pythonExec = isWindows 
+    ? path.join(venvDir, 'Scripts', 'python.exe') 
+    : path.join(venvDir, 'bin', 'python');
+
+  // Cria o venv se ele não existir
+  if (!fs.existsSync(pythonExec)) {
+    console.log(`📦 [SANDBOX] Criando venv para a skill '${skillName}' em ${venvDir}...`);
+    try {
+      await execPromise(`python -m venv "${venvDir}"`);
+      console.log(`📦 [SANDBOX] Ambiente virtual criado com sucesso.`);
+    } catch (venvErr) {
+      console.error(`📦 [SANDBOX] Erro ao criar venv:`, venvErr);
+      // Fallback para o python do sistema se falhar
+      try {
+        const { stdout, stderr } = await execPromise(`python "${scriptPath}" "${tempArgsFile}"`);
+        return { stdout, stderr, success: true };
+      } catch (globalErr) {
+        return {
+          stdout: globalErr.stdout || '',
+          stderr: globalErr.stderr || globalErr.message,
+          success: false
+        };
+      }
+    }
+  }
+
+  // Instala dependências se houver requirements.txt na pasta da Skill
+  let requirementsPath = '';
+  if (storage.useFirebase) {
+    try {
+      const file = await storage.getFileContent(skillName, 'requirements.txt');
+      if (file && file.content) {
+        requirementsPath = path.join(sandboxDir, 'requirements.txt');
+        fs.writeFileSync(requirementsPath, file.content);
+      }
+    } catch (e) {
+      // requirements.txt não existe no Firebase
+    }
+  } else {
+    const localReqPath = path.join(sandboxDir, 'requirements.txt');
+    if (fs.existsSync(localReqPath)) {
+      requirementsPath = localReqPath;
+    }
+  }
+
+  if (requirementsPath) {
+    const hashFile = path.join(venvDir, '.pip_installed_hash');
+    const currentReqs = fs.readFileSync(requirementsPath, 'utf8');
+    let needsInstall = true;
+    
+    if (fs.existsSync(hashFile)) {
+      const installedHash = fs.readFileSync(hashFile, 'utf8');
+      if (installedHash === currentReqs) {
+        needsInstall = false;
+      }
+    }
+
+    if (needsInstall) {
+      console.log(`📦 [SANDBOX] Instalando dependências de requirements.txt para a skill '${skillName}'...`);
+      const pipExec = isWindows 
+        ? path.join(venvDir, 'Scripts', 'pip.exe') 
+        : path.join(venvDir, 'bin', 'pip');
+      try {
+        await execPromise(`"${pipExec}" install -r "${requirementsPath}"`);
+        fs.writeFileSync(hashFile, currentReqs);
+        console.log(`📦 [SANDBOX] Pip instalado/atualizado com sucesso.`);
+      } catch (pipErr) {
+        console.warn(`📦 [SANDBOX] Falha parcial na execução do pip install: ${pipErr.message}`);
+      }
+    }
+  }
+
+  // Executa o script utilizando o python do venv
+  try {
+    const { stdout, stderr } = await execPromise(`"${pythonExec}" "${scriptPath}" "${tempArgsFile}"`);
+    return { stdout, stderr, success: true };
+  } catch (cmdErr) {
+    return {
+      stdout: cmdErr.stdout || '',
+      stderr: cmdErr.stderr || cmdErr.message,
+      success: false
+    };
+  }
+}
+
 // --- MOTOR DE EXECUÇÃO DO AGENTE ---
 
 
 
 app.post('/api/agent/chat', authMiddleware, async (req, res) => {
   const startTime = performance.now();
-  const { messages, activeSkillName, apiKey, fileData, fileMime, fileName, conversationId } = req.body;
+  const { messages, activeSkillName, apiKey, fileData, fileMime, fileName, conversationId, useDockerSandbox } = req.body;
 
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: 'Mensagens são obrigatórias.' });
@@ -1488,6 +1691,8 @@ Se nenhuma skill se aplicar ao pedido do usuário, responda com needsSkill: fals
       console.warn('Playbook não encontrado no chat do agente:', playbookErr);
     }
 
+    const skillConfig = parsePlaybookFrontmatter(playbookContent);
+
     // --- ETAPA RAG: Busca semântica por preferências anteriores ---
     let matchedMemoriesPrompt = '';
     try {
@@ -1668,6 +1873,45 @@ Sempre responda em Português do Brasil (pt-BR).`;
       const toolName = currentParsedResult.callTool;
       const toolArgs = currentParsedResult.args || {};
 
+      // --- LÓGICA HUMAN-IN-THE-LOOP ---
+      const requireApprovalGlobal = req.body.requireApprovalGlobal === true;
+      const isRestricted = skillConfig.restricted_tools && skillConfig.restricted_tools.includes(toolName);
+      const needsApproval = skillConfig.needs_approval || isRestricted || requireApprovalGlobal;
+      const bypass = req.body.bypassApproval;
+      const hasBypass = bypass && bypass.toolName === toolName;
+
+      if (needsApproval && !hasBypass) {
+        steps.push({ step: 'tool_approval_required', detail: `Aprovação manual pendente para rodar script: ${toolName}` });
+        
+        const endTime = performance.now();
+        trace.metrics.latencyMs = Math.round(endTime - startTime);
+        trace.metrics.tokens = {
+          prompt: totalPromptTokens,
+          completion: totalCompletionTokens,
+          total: totalTokensCount
+        };
+
+        const finalMessages = [
+          ...messages,
+          { role: 'assistant', content: currentCleanedReply, trace }
+        ];
+        const conversationTitle = messages[0]?.content ? (messages[0].content.slice(0, 40) + (messages[0].content.length > 40 ? '...' : '')) : 'Nova conversa';
+        await storage.saveConversation(activeConversationId, userId, skillToUse, conversationTitle, finalMessages);
+
+        return res.json({
+          reply: currentCleanedReply,
+          activeSkillName: skillToUse,
+          steps,
+          trace,
+          conversationId: activeConversationId,
+          requiresApproval: {
+            toolName,
+            args: toolArgs
+          }
+        });
+      }
+      // --- FIM LÓGICA HUMAN-IN-THE-LOOP ---
+
       steps.push({ step: 'tool_executing', detail: `Invocando script Python: ${toolName}...` });
 
       let scriptPath = '';
@@ -1695,10 +1939,11 @@ Sempre responda em Português do Brasil (pt-BR).`;
       let toolSuccess = false;
 
       try {
-        const { stdout, stderr } = await execPromise(`python "${scriptPath}" "${tempArgsFile}"`);
-        toolStdout = stdout;
-        toolStderr = stderr;
-        toolSuccess = true;
+        const useDocker = useDockerSandbox === true;
+        const result = await runPythonSandbox(skillToUse, scriptPath, tempArgsFile, useDocker);
+        toolStdout = result.stdout;
+        toolStderr = result.stderr;
+        toolSuccess = result.success;
       } catch (cmdErr) {
         toolStdout = cmdErr.stdout || '';
         toolStderr = cmdErr.stderr || cmdErr.message;
@@ -1935,9 +2180,112 @@ Responda estritamente no formato JSON:
   }
 }
 
+// Endpoint para refinamento automático do playbook (Auto-Tuning) via Gemini
+app.post('/api/agent/auto-tune', async (req, res) => {
+  const { skillName, userFeedback, interactionContext, apiKey } = req.body;
+
+  if (!skillName || !userFeedback) {
+    return res.status(400).json({ error: 'Parâmetros skillName e userFeedback são obrigatórios.' });
+  }
+
+  try {
+    // 1. Lê o conteúdo atual de skill.md
+    const file = await storage.getFileContent(skillName, 'skill.md');
+    const oldContent = file.content || '';
+
+    // 2. Chama a API do Gemini para reescrever o Playbook com base no feedback
+    const actualApiKey = apiKey || process.env.GEMINI_API_KEY || await getLastApiKey();
+    if (!actualApiKey) {
+      return res.status(400).json({ error: 'Chave do Gemini API não configurada.' });
+    }
+
+    const systemInstruction = `Você é um Engenheiro de Prompt de IA Sênior especializado em playbooks de instruções cognitivas.
+Sua missão é ler o playbook markdown atual de uma Skill de IA, analisar a falha cometida na conversa e o feedback do usuário.
+Você deve reescrever as instruções do playbook markdown (mantendo todo o YAML frontmatter e estrutura de seções originais) adicionando diretrizes rígidas nas seções pertinentes (como nos Gotchas ou Checkpoints de QA) para mitigar o erro.
+Responda estritamente com o novo conteúdo completo do playbook markdown editado. Não inclua blocos de código tipo \`\`\`markdown, retorne apenas o texto puro do markdown.`;
+
+    const prompt = `=== PLAYBOOK ATUAL (skill.md) ===
+${oldContent}
+=== FIM DO PLAYBOOK ===
+
+=== INTERAÇÃO DE ERRO ===
+Pergunta do Usuário: "${interactionContext?.question || 'N/A'}"
+Resposta Errada da IA: "${interactionContext?.reply || 'N/A'}"
+=== FIM DA INTERAÇÃO ===
+
+=== FEEDBACK CORRETIVO DO USUÁRIO ===
+"${userFeedback}"
+=== FIM DO FEEDBACK ===
+
+Por favor, reescreva o playbook markdown corrigindo este problema de acordo com as instruções do sistema.`;
+
+    const chatUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${actualApiKey}`;
+    const response = await fetch(chatUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        systemInstruction: { parts: [{ text: systemInstruction }] }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Erro no Gemini API: ${response.status} - ${errorText}`);
+    }
+
+    const chatData = await response.json();
+    let newContent = chatData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    newContent = newContent.replace(/^```markdown/, '').replace(/```$/, '').trim();
+
+    if (!newContent) {
+      throw new Error('O Gemini retornou um playbook vazio.');
+    }
+
+    // 3. Grava o novo playbook temporariamente no disco/armazenamento
+    await storage.saveFile(skillName, 'skill.md', newContent);
+
+    // 4. Retorna o conteúdo antigo e o novo para que o frontend exiba a diff side-by-side
+    res.json({
+      success: true,
+      oldContent,
+      newContent,
+      message: 'Regras do playbook reescritas temporariamente.'
+    });
+
+  } catch (error) {
+    console.error('Erro no auto-tune do agente:', error);
+    res.status(500).json({ error: 'Erro ao gerar o auto-tune do playbook: ' + error.message });
+  }
+});
+
+// Endpoint para confirmar ou descartar o auto-tuning do playbook
+app.post('/api/agent/auto-tune/confirm', async (req, res) => {
+  const { skillName, oldContent, confirmed } = req.body;
+
+  if (!skillName) {
+    return res.status(400).json({ error: 'Parâmetro skillName é obrigatório.' });
+  }
+
+  try {
+    if (!confirmed) {
+      console.log(`[AUTO-TUNE] Ajuste rejeitado. Restaurando o playbook da skill ${skillName} ao estado anterior...`);
+      await storage.saveFile(skillName, 'skill.md', oldContent || '');
+      return res.json({ success: true, message: 'Alterações descartadas com sucesso.' });
+    }
+
+    console.log(`[AUTO-TUNE] Ajuste confirmado para a skill ${skillName}.`);
+    res.json({ success: true, message: 'Ajuste do playbook confirmado e salvo com sucesso!' });
+
+  } catch (error) {
+    console.error('Erro ao confirmar auto-tune:', error);
+    res.status(500).json({ error: 'Erro ao confirmar auto-tune: ' + error.message });
+  }
+});
+
 // Endpoint para rodar manualmente uma ferramenta da Skill
 app.post('/api/agent/run-tool', async (req, res) => {
-  const { skillName, toolName, args } = req.body;
+  const { skillName, toolName, args, useDockerSandbox } = req.body;
   if (!skillName || !toolName) {
     return res.status(400).json({ error: 'Parâmetros skillName e toolName são obrigatórios.' });
   }
@@ -1966,13 +2314,14 @@ app.post('/api/agent/run-tool', async (req, res) => {
     let success = false;
 
     try {
-      const { stdout, stderr } = await execPromise(`python "${scriptPath}" "${tempArgsFile}"`);
-      stdoutStr = stdout;
-      stderrStr = stderr;
-      success = true;
+      const useDocker = useDockerSandbox === true;
+      const result = await runPythonSandbox(skillName, scriptPath, tempArgsFile, useDocker);
+      stdoutStr = result.stdout;
+      stderrStr = result.stderr;
+      success = result.success;
     } catch (err) {
-      stdoutStr = err.stdout || '';
-      stderrStr = err.stderr || err.message;
+      stdoutStr = '';
+      stderrStr = err.message;
     } finally {
       if (fs.existsSync(tempArgsFile)) {
         fs.unlinkSync(tempArgsFile);
@@ -2052,6 +2401,49 @@ app.delete('/api/skills/:name', async (req, res) => {
 // --- SISTEMA DE GATILHOS DE AUTOMAÇÃO E WORKER QUEUE (MODO SHADOWING EM BACKGROUND) ---
 
 let lastUsedApiKey = '';
+let lastUsedSdkApiKey = '';
+
+async function getSdkApiKey() {
+  if (lastUsedSdkApiKey) return lastUsedSdkApiKey;
+  try {
+    if (storage.useFirebase) {
+      const config = await storage.getSystemConfig();
+      if (config) {
+        lastUsedSdkApiKey = config.sdkApiKey || '';
+        return lastUsedSdkApiKey;
+      }
+    } else {
+      if (fs.existsSync(CONFIG_FILE)) {
+        const content = fs.readFileSync(CONFIG_FILE, 'utf8');
+        const parsed = JSON.parse(content);
+        lastUsedSdkApiKey = parsed.sdkApiKey || '';
+        return lastUsedSdkApiKey;
+      }
+    }
+  } catch (e) {
+    console.error('Erro ao ler SDK API Key das configurações:', e);
+  }
+  return '';
+}
+
+async function saveSdkApiKey(key) {
+  lastUsedSdkApiKey = key;
+  try {
+    if (storage.useFirebase) {
+      await storage.saveSystemConfig({ sdkApiKey: key });
+    } else {
+      let currentConfig = {};
+      if (fs.existsSync(CONFIG_FILE)) {
+        currentConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      }
+      currentConfig.sdkApiKey = key;
+      fs.writeFileSync(CONFIG_FILE, JSON.stringify(currentConfig, null, 2));
+    }
+  } catch (err) {
+    console.error('Erro ao salvar SDK API Key nas configurações:', err);
+  }
+}
+
 const CONFIG_FILE = path.join(MEMORY_DIR, 'config.json');
 const AUTOMATION_LOGS_FILE = path.join(MEMORY_DIR, 'automation_logs.json');
 const automationJobs = [];
@@ -2394,10 +2786,10 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
       let toolSuccess = false;
 
       try {
-        const { stdout, stderr } = await execPromise(`python "${scriptPath}" "${tempArgsFile}"`);
-        toolStdout = stdout;
-        toolStderr = stderr;
-        toolSuccess = true;
+        const result = await runPythonSandbox(job.skillName, scriptPath, tempArgsFile, false);
+        toolStdout = result.stdout;
+        toolStderr = result.stderr;
+        toolSuccess = result.success;
       } catch (cmdErr) {
         toolStdout = cmdErr.stdout || '';
         toolStderr = cmdErr.stderr || cmdErr.message;
@@ -3112,6 +3504,320 @@ app.post('/api/templates/:name/clone', async (req, res) => {
     res.json({ message: 'Template clonado com sucesso!', name });
   } catch (err) {
     res.status(500).json({ error: 'Erro ao clonar template: ' + err.message });
+  }
+});
+
+// === ENDPOINTS DO HUB DE SKILLS (MARKETPLACE) ===
+
+// Publicar uma Skill no Hub (Marketplace)
+app.post('/api/marketplace/publish', async (req, res) => {
+  const { skillName } = req.body;
+  if (!skillName) {
+    return res.status(400).json({ error: 'O parâmetro skillName é obrigatório.' });
+  }
+
+  try {
+    let skillMetadata = {};
+    let filesPayload = [];
+
+    // 1. Obtém dados e arquivos da Skill
+    if (storage.useFirebase) {
+      const details = await storage.getSkill(skillName);
+      skillMetadata = {
+        name: skillName,
+        title: details.title || skillName,
+        description: details.description || '',
+        category: details.category || 'Geral'
+      };
+
+      const db = storage.getDb();
+      const filesSnap = await db.collection('skills').doc(skillName).collection('files').get();
+      filesSnap.forEach(doc => {
+        const data = doc.data();
+        filesPayload.push({
+          path: doc.id.replace(/_/g, '/'),
+          content: data.content || '',
+          mimeType: data.mimeType || 'text/plain',
+          isBinary: !!data.isBinary
+        });
+      });
+    } else {
+      const skillPath = path.join(SKILLS_DIR, skillName);
+      if (!fs.existsSync(skillPath)) {
+        return res.status(404).json({ error: 'Skill não encontrada localmente.' });
+      }
+
+      let title = skillName;
+      let description = 'Playbook publicado.';
+      let category = 'Geral';
+
+      const playbookPath = path.join(skillPath, 'skill.md');
+      if (fs.existsSync(playbookPath)) {
+        const content = fs.readFileSync(playbookPath, 'utf8');
+        const frontmatterRegex = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/;
+        const match = content.match(frontmatterRegex);
+        if (match) {
+          const yamlStr = match[1];
+          const lines = yamlStr.split('\n');
+          for (const line of lines) {
+            const parts = line.split(':');
+            if (parts.length >= 2) {
+              const key = parts[0].trim().toLowerCase();
+              const value = parts.slice(1).join(':').trim();
+              if (key === 'title') title = value.replace(/^['"]|['"]$/g, '');
+              else if (key === 'description') description = value.replace(/^['"]|['"]$/g, '');
+              else if (key === 'category') category = value.replace(/^['"]|['"]$/g, '');
+            }
+          }
+        }
+      }
+
+      skillMetadata = { name: skillName, title, description, category };
+
+      const getLocalFiles = (dir, base, list = []) => {
+        const items = fs.readdirSync(dir, { withFileTypes: true });
+        for (const item of items) {
+          const full = path.join(dir, item.name);
+          const rel = path.relative(base, full).replace(/\\/g, '/');
+          if (item.isDirectory()) {
+            if (item.name !== '.venv' && item.name !== '__pycache__') {
+              getLocalFiles(full, base, list);
+            }
+          } else {
+            const ext = path.extname(item.name).toLowerCase();
+            const isBinary = ['.png', '.jpg', '.jpeg', '.gif', '.pdf', '.zip'].includes(ext);
+            const content = fs.readFileSync(full);
+            list.push({
+              path: rel,
+              content: isBinary ? content.toString('base64') : content.toString('utf8'),
+              mimeType: isBinary ? (ext === '.pdf' ? 'application/pdf' : 'image/' + ext.replace('.', '')) : 'text/plain',
+              isBinary
+            });
+          }
+        }
+        return list;
+      };
+
+      filesPayload = getLocalFiles(skillPath, skillPath);
+    }
+
+    const payload = {
+      ...skillMetadata,
+      publisher: 'Usuário do AI Skills Manager',
+      publishedAt: new Date().toISOString(),
+      files: filesPayload
+    };
+
+    // 2. Grava no Hub (Nuvem ou Local)
+    if (storage.useFirebase) {
+      const db = storage.getDb();
+      await db.collection('marketplace_skills').doc(skillName).set(payload);
+    } else {
+      const marketFile = path.join(MEMORY_DIR, 'marketplace_skills.json');
+      let marketData = {};
+      if (fs.existsSync(marketFile)) {
+        marketData = JSON.parse(fs.readFileSync(marketFile, 'utf8'));
+      }
+      marketData[skillName] = payload;
+      fs.writeFileSync(marketFile, JSON.stringify(marketData, null, 2));
+    }
+
+    res.json({ success: true, message: 'Skill publicada no Hub com sucesso!', skillName });
+
+  } catch (error) {
+    console.error('Erro ao publicar no Hub:', error);
+    res.status(500).json({ error: 'Erro ao publicar skill no Hub: ' + error.message });
+  }
+});
+
+// Listar Skills do Hub (Marketplace)
+app.get('/api/marketplace/skills', async (req, res) => {
+  try {
+    const list = [];
+    if (storage.useFirebase) {
+      const db = storage.getDb();
+      const snap = await db.collection('marketplace_skills').get();
+      snap.forEach(doc => {
+        const data = doc.data();
+        list.push({
+          name: doc.id,
+          title: data.title || doc.id,
+          description: data.description || '',
+          category: data.category || 'Geral',
+          publisher: data.publisher || 'Desconhecido',
+          publishedAt: data.publishedAt || ''
+        });
+      });
+    } else {
+      const marketFile = path.join(MEMORY_DIR, 'marketplace_skills.json');
+      if (fs.existsSync(marketFile)) {
+        const marketData = JSON.parse(fs.readFileSync(marketFile, 'utf8'));
+        Object.keys(marketData).forEach(key => {
+          const data = marketData[key];
+          list.push({
+            name: key,
+            title: data.title || key,
+            description: data.description || '',
+            category: data.category || 'Geral',
+            publisher: data.publisher || 'Local',
+            publishedAt: data.publishedAt || ''
+          });
+        });
+      }
+    }
+    res.json(list);
+  } catch (error) {
+    console.error('Erro ao listar skills do Hub:', error);
+    res.status(500).json({ error: 'Erro ao listar skills do Hub: ' + error.message });
+  }
+});
+
+// Clonar/Importar uma Skill do Hub
+app.post('/api/marketplace/clone', async (req, res) => {
+  const { name, targetName } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: 'O parâmetro name é obrigatório.' });
+  }
+
+  const finalName = targetName || name;
+
+  try {
+    let sourceSkill = null;
+
+    if (storage.useFirebase) {
+      const db = storage.getDb();
+      const doc = await db.collection('marketplace_skills').doc(name).get();
+      if (doc.exists) {
+        sourceSkill = doc.data();
+      }
+    } else {
+      const marketFile = path.join(MEMORY_DIR, 'marketplace_skills.json');
+      if (fs.existsSync(marketFile)) {
+        const marketData = JSON.parse(fs.readFileSync(marketFile, 'utf8'));
+        sourceSkill = marketData[name] || null;
+      }
+    }
+
+    if (!sourceSkill) {
+      return res.status(404).json({ error: 'Skill não encontrada no Hub.' });
+    }
+
+    // Cria a Skill localmente / Firestore
+    if (storage.useFirebase) {
+      const skills = await storage.listSkills();
+      if (skills.some(s => s.name === finalName)) {
+        return res.status(400).json({ error: 'Você já possui uma Skill com este nome.' });
+      }
+
+      for (const file of sourceSkill.files) {
+        if (file.isBinary) {
+          const buffer = Buffer.from(file.content, 'base64');
+          await storage.saveBinaryFile(finalName, file.path, buffer, file.mimeType);
+        } else {
+          await storage.saveFile(finalName, file.path, file.content);
+        }
+      }
+    } else {
+      const targetPath = path.join(SKILLS_DIR, finalName);
+      if (fs.existsSync(targetPath)) {
+        return res.status(400).json({ error: 'Você já possui uma Skill com este nome.' });
+      }
+
+      fs.mkdirSync(targetPath, { recursive: true });
+
+      for (const file of sourceSkill.files) {
+        const filePath = path.join(targetPath, file.path);
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        
+        if (file.isBinary) {
+          const buffer = Buffer.from(file.content, 'base64');
+          fs.writeFileSync(filePath, buffer);
+        } else {
+          fs.writeFileSync(filePath, file.content, 'utf8');
+        }
+      }
+
+      await runGit(['add', finalName]);
+      await runGit(['commit', '-m', `Clonar skill do Hub: ${finalName}`]);
+    }
+
+    await syncAutomationTriggers();
+
+    res.json({ success: true, message: `Skill ${finalName} importada do Hub!`, name: finalName });
+
+  } catch (error) {
+    console.error('Erro ao importar skill do Hub:', error);
+    res.status(500).json({ error: 'Erro ao importar skill do Hub: ' + error.message });
+  }
+});
+
+
+// === ENDPOINT DO SDK (INTEGRAÇÕES EXTERNAS) ===
+
+// Obter prompt compilado da Skill com Hot-Reloading
+app.post('/api/sdk/skills/:name/prompt', async (req, res) => {
+  const { name } = req.params;
+  const { query } = req.body;
+
+  // Validação da API Key do SDK
+  const reqSdkKey = req.headers['x-sdk-api-key'] || req.query.apiKey;
+  const configuredSdkKey = await getSdkApiKey();
+
+  if (!configuredSdkKey || reqSdkKey !== configuredSdkKey) {
+    return res.status(401).json({ error: 'Acesso não autorizado. SDK API Key inválida ou não configurada.' });
+  }
+
+  try {
+    // 1. Carrega o Playbook
+    const file = await storage.getFileContent(name, 'skill.md');
+    const playbookContent = file.content || '';
+
+    // 2. Realiza RAG se houver query
+    let memories = [];
+    if (query) {
+      const vectorDB = require('./vectorDB');
+      const searchResults = vectorDB.search(name, query, 3);
+      memories = searchResults.map(r => r.content);
+    }
+
+    // 3. Lê as ferramentas disponíveis na pasta tools/
+    let toolsList = [];
+    if (storage.useFirebase) {
+      const details = await storage.getSkill(name);
+      if (details.files) {
+        toolsList = details.files
+          .filter(f => !f.isDirectory && f.path.startsWith('tools/'))
+          .map(f => path.basename(f.path));
+      }
+    } else {
+      const toolsPath = path.join(SKILLS_DIR, name, 'tools');
+      if (fs.existsSync(toolsPath)) {
+        toolsList = fs.readdirSync(toolsPath).filter(f => f.endsWith('.py') || f.endsWith('.js'));
+      }
+    }
+
+    // 4. Compila a System Instruction
+    const systemInstruction = `Você é o Agente Executivo encarregado do playbook da Skill "${name}".
+Siga estritamente as regras de instrução fornecidas abaixo:
+
+=== PLAYBOOK DE INSTRUÇÃO (skill.md) ===
+${playbookContent}
+=== FIM DO PLAYBOOK ===
+
+${memories.length > 0 ? `=== CONTEXTO DE APRENDIZADO / MEMÓRIA (RAG) ===\n${memories.join('\n')}\n=== FIM DO CONTEXTO ===\n` : ''}
+Você tem autorização para propor a execução das seguintes ferramentas locais caso necessário: ${toolsList.join(', ')}.`;
+
+    res.json({
+      success: true,
+      skillName: name,
+      systemInstruction,
+      tools: toolsList,
+      hotReloadedAt: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Erro no SDK de Prompt:', error);
+    res.status(500).json({ error: 'Erro ao gerar o prompt do SDK: ' + error.message });
   }
 });
 

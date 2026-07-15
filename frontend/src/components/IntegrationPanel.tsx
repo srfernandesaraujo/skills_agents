@@ -186,6 +186,63 @@ Você tem acesso às seguintes Skills estruturadas locais (playbooks). Quando re
               {generateJsonCatalog()}
             </pre>
           </div>
+
+          {/* Opção 3: SDK com Hot-Reloading de Prompt em Tempo Real */}
+          <div className="prompt-block glass-panel">
+            <div className="prompt-block-header">
+              <div className="prompt-block-title">
+                <Box size={16} className="text-purple" style={{ color: 'var(--accent-purple)' }} />
+                <h4>Endpoint de SDK (Hot-Reloading em Tempo Real)</h4>
+              </div>
+            </div>
+            <p className="block-instruction-text">
+              Faça a requisição direta ao endpoint do servidor para obter o prompt atualizado instantaneamente, compilado com RAG e lista de ferramentas ativas.
+            </p>
+
+            <div style={{ background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '6px', border: '1px solid var(--border-color)', marginBottom: '12px', fontSize: '0.75rem' }}>
+              <strong style={{ color: 'var(--text-primary)', display: 'block', marginBottom: '4px' }}>Sua SDK API Key:</strong>
+              <code style={{ background: 'rgba(0,0,0,0.5)', padding: '4px 8px', borderRadius: '4px', color: 'var(--accent-cyan)', fontFamily: 'var(--font-mono)' }}>
+                {localStorage.getItem('sdk_api_key') || 'sdk_gerar_chave_nas_configuracoes'}
+              </code>
+              <span className="form-help" style={{ display: 'block', marginTop: '4px' }}>
+                Gerencie/Gere uma chave de autenticação a qualquer momento nas Configurações do Sistema.
+              </span>
+            </div>
+
+            {/* Código cURL */}
+            <div style={{ marginBottom: '12px' }}>
+              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600, display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Snippet cURL</span>
+              <pre className="prompt-preview-box" style={{ fontSize: '0.72rem', maxHeight: '120px' }}>
+{`curl -X POST "${backendUrl}/api/sdk/skills/${activeSkills[0]?.name || 'nome-da-skill'}/prompt" \\
+  -H "Content-Type: application/json" \\
+  -H "x-sdk-api-key: ${localStorage.getItem('sdk_api_key') || 'SUA_SDK_API_KEY'}" \\
+  -d '{"query": "pergunta do usuario para busca RAG"}'`}
+              </pre>
+            </div>
+
+            {/* Código Python */}
+            <div style={{ marginBottom: '12px' }}>
+              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600, display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Integração Python (requests)</span>
+              <pre className="prompt-preview-box" style={{ fontSize: '0.72rem', maxHeight: '120px' }}>
+{`import requests
+
+url = "${backendUrl}/api/sdk/skills/${activeSkills[0]?.name || 'nome-da-skill'}/prompt"
+headers = {
+    "Content-Type": "application/json",
+    "x-sdk-api-key": "${localStorage.getItem('sdk_api_key') || 'SUA_SDK_API_KEY'}"
+}
+payload = {
+    "query": "pergunta do usuario para busca RAG"
+}
+
+response = requests.post(url, json=payload, headers=headers)
+prompt_data = response.json()
+
+# Envie este Prompt de Sistema compilado para a sua LLM
+system_instruction = prompt_data.get("systemInstruction")`}
+              </pre>
+            </div>
+          </div>
         </div>
       </div>
 
