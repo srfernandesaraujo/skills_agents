@@ -379,11 +379,20 @@ function parseSkillMetadata(skillName) {
 app.get('/api/config/status', async (req, res) => {
   try {
     const dbApiKey = await getLastApiKey();
+    const rawKey = process.env.FIREBASE_PRIVATE_KEY || '';
     res.json({
       hasGlobalApiKey: !!process.env.GEMINI_API_KEY || !!dbApiKey,
       useFirebase: storage.useFirebase,
       firebaseInitialized: storage.isFirebaseInitialized(),
       firebaseInitError: storage.getFirebaseInitError(),
+      keyDebug: {
+        length: rawKey.length,
+        startsWith: rawKey.substring(0, 35),
+        endsWith: rawKey.substring(Math.max(0, rawKey.length - 35)),
+        includesRealNewlines: rawKey.includes('\n'),
+        includesLiteralSlashN: rawKey.includes('\\n'),
+        spacesCount: (rawKey.match(/ /g) || []).length,
+      },
       envCheck: {
         hasProjectId: !!process.env.FIREBASE_PROJECT_ID,
         hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
@@ -392,11 +401,20 @@ app.get('/api/config/status', async (req, res) => {
       }
     });
   } catch (err) {
+    const rawKey = process.env.FIREBASE_PRIVATE_KEY || '';
     res.json({
       hasGlobalApiKey: !!process.env.GEMINI_API_KEY,
       useFirebase: storage.useFirebase,
       firebaseInitialized: storage.isFirebaseInitialized(),
       firebaseInitError: storage.getFirebaseInitError(),
+      keyDebug: {
+        length: rawKey.length,
+        startsWith: rawKey.substring(0, 35),
+        endsWith: rawKey.substring(Math.max(0, rawKey.length - 35)),
+        includesRealNewlines: rawKey.includes('\n'),
+        includesLiteralSlashN: rawKey.includes('\\n'),
+        spacesCount: (rawKey.match(/ /g) || []).length,
+      },
       envCheck: {
         hasProjectId: !!process.env.FIREBASE_PROJECT_ID,
         hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
