@@ -1467,6 +1467,40 @@ async function runPythonSandbox(skillName, scriptPath, tempArgsFile, useDocker) 
   }
 }
 
+// Sincroniza recursivamente os arquivos gerados/modificados na sandbox de volta para o Firebase Storage
+async function syncSandboxFilesToFirebase(skillName, sandboxDir) {
+  if (!fs.existsSync(sandboxDir)) return;
+  const walk = async (dir, baseDir) => {
+    const list = fs.readdirSync(dir, { withFileTypes: true });
+    for (const item of list) {
+      if (item.name === '.venv' || item.name === 'node_modules' || item.name === '.git') continue;
+      const fullPath = path.join(dir, item.name);
+      if (item.isDirectory()) {
+        await walk(fullPath, baseDir);
+      } else {
+        const relativePath = path.relative(baseDir, fullPath).replace(/\\/g, '/');
+        // Apenas sincroniza arquivos em dados/ ou assets/ ou na raiz (exceto .py de scripts e arquivos ocultos do venv/git)
+        if (relativePath.startsWith('dados/') || relativePath.startsWith('assets/') || (!relativePath.includes('/') && !relativePath.endsWith('.py') && !relativePath.startsWith('.'))) {
+          const fileBuffer = fs.readFileSync(fullPath);
+          const ext = path.extname(relativePath).toLowerCase();
+          const isBinary = ['.png', '.jpg', '.jpeg', '.gif', '.pdf', '.zip', '.xlsx', '.xls', '.docx'].includes(ext);
+          const mimeType = isBinary 
+            ? (ext === '.xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/octet-stream') 
+            : 'text/plain';
+          
+          console.log(`[SANDBOX SYNC] Sincronizando ${relativePath} com Firebase Storage...`);
+          if (isBinary) {
+            await storage.saveBinaryFile(skillName, relativePath, fileBuffer, mimeType);
+          } else {
+            await storage.saveFile(skillName, relativePath, fileBuffer.toString('utf8'));
+          }
+        }
+      }
+    }
+  };
+  await walk(sandboxDir, sandboxDir);
+}
+
 // --- MOTOR DE EXECUÇÃO DO AGENTE ---
 
 
@@ -1927,6 +1961,9 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
         }
       }
 
+      // Injeta variáveis extras necessárias nos argumentos da ferramenta
+      toolArgs.skill_name = skillToUse;
+
       // Cria um arquivo de argumentos temporário em JSON
       const tempArgsFile = path.join(process.cwd(), `.tmp_args_${Date.now()}_${Math.floor(Math.random() * 1000)}.json`);
       fs.writeFileSync(tempArgsFile, JSON.stringify(toolArgs, null, 2));
@@ -1951,6 +1988,16 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
         }
         if (tempScriptFile && fs.existsSync(tempScriptFile)) {
           fs.unlinkSync(tempScriptFile);
+        }
+
+        // Sincroniza os arquivos gerados/modificados na sandbox com o Firebase Storage
+        if (storage.useFirebase) {
+          try {
+            const sandboxDir = path.join(process.cwd(), '.sandboxes', skillToUse);
+            await syncSandboxFilesToFirebase(skillToUse, sandboxDir);
+          } catch (syncErr) {
+            console.error('[SANDBOX SYNC ERROR] Falha ao sincronizar arquivos da sandbox:', syncErr);
+          }
         }
       }
 
