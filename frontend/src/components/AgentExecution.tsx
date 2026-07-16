@@ -715,8 +715,15 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
     html = html.replace(/^\s*-\s+(.*?)$/gm, '<li>$1</li>');
     html = html.replace(/^\s*\*\s+(.*?)$/gm, '<li>$1</li>');
 
-    // Links de Download
-    html = html.replace(/\[Download\]\((.*?)\)/gi, '<a href="$1" download class="chat-download-link"><Download size="12" /> Baixar Arquivo Gerado</a>');
+    // Links de Download (flexível para qualquer texto e normalizando caminhos relativos de media)
+    html = html.replace(/\[(.*?)\]\((.*?media\?path=.*?)\)/gi, (match, text, url) => {
+      const label = text.toLowerCase() === 'download' ? 'Baixar Arquivo Gerado' : `Baixar ${text}`;
+      let normalizedUrl = url;
+      if (!url.startsWith('/') && !url.startsWith('http')) {
+        normalizedUrl = '/' + url;
+      }
+      return `<a href="${normalizedUrl}" download class="chat-download-link"><Download size="12" /> ${label}</a>`;
+    });
 
     // Blocos de código
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
