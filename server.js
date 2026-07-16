@@ -1396,7 +1396,7 @@ async function runPythonSandbox(skillName, scriptPath, tempArgsFile, useDocker) 
       console.error(`📦 [SANDBOX] Erro ao criar venv:`, venvErr);
       // Fallback para o python do sistema se falhar
       try {
-        const { stdout, stderr } = await execPromise(`python "${scriptPath}" "${tempArgsFile}"`);
+        const { stdout, stderr } = await execPromise(`python "${scriptPath}" "${tempArgsFile}"`, { cwd: sandboxDir });
         return { stdout, stderr, success: true };
       } catch (globalErr) {
         return {
@@ -1456,7 +1456,7 @@ async function runPythonSandbox(skillName, scriptPath, tempArgsFile, useDocker) 
 
   // Executa o script utilizando o python do venv
   try {
-    const { stdout, stderr } = await execPromise(`"${pythonExec}" "${scriptPath}" "${tempArgsFile}"`);
+    const { stdout, stderr } = await execPromise(`"${pythonExec}" "${scriptPath}" "${tempArgsFile}"`, { cwd: sandboxDir });
     return { stdout, stderr, success: true };
   } catch (cmdErr) {
     return {
