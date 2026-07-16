@@ -721,7 +721,7 @@ app.post('/api/skills/generate', authMiddleware, async (req, res) => {
     const formattedTitle = title || name;
     const formattedDesc = objective || 'Uma nova Skill de IA especialista.';
 
-    const systemPrompt = `Você é um Engenheiro de Software e Arquiteto de IA Sênior especialista em gerar pacotes completos de "AI Skills" (Playbooks de IA) de altíssimo nível, ricos em detalhes e qualidade premium.
+    const systemPrompt = `Você é um Engenheiro de Software e Arquiteto de IA Sênior especialista em gerar pacotes de playbooks operacionais de IA ("AI Skills") de altíssimo nível, focados em pragmatismo, profundidade técnica e adaptabilidade de conteúdo.
 
 O usuário deseja criar uma nova Skill de IA com as seguintes especificações:
 - Nome/Slug: ${folderName}
@@ -734,7 +734,7 @@ O usuário deseja criar uma nova Skill de IA com as seguintes especificações:
 
 Sua tarefa é gerar uma estrutura completa de arquivos em formato JSON válido:
 {
-  "skillMd": "O conteúdo do arquivo principal skill.md em markdown completo. Deve ser de nível de excelência, contendo obrigatoriamente frontmatter YAML, seção Diferença Fundamental (Abordagem Tradicional vs Abordagem de Excelência com tabela comparativa rica e específica para o tema), Passo 0 com 3 a 5 perguntas diagnósticas detalhadas e específicas para o tema, Workflow Operacional Detalhado em tabela markdown com tempos e ações, Diretrizes e Gotchas específicos, e Checkpoints de Validação (QA) específicos do tema.",
+  "skillMd": "O conteúdo do arquivo principal skill.md em markdown completo. Deve ser adaptado à temática da Skill, evitando templates engessados ou repetitivos. O playbook DEVE conter: frontmatter YAML no topo; uma introdução clara ao papel do agente; uma seção de 'Princípios Centrais' ou 'Diretrizes de Execução'; um fluxo operacional/conversacional passo a passo detalhando como a interação ou raciocínio deve se desdobrar turno a turno ou etapa por etapa (incluindo exemplos de relatórios, rubricas ou estruturas de outputs que o agente deve gerar); e uma seção contendo regras críticas de 'O que esta Skill NUNCA faz' (definindo limites claros, salvaguardas contra suposições e momentos exatos para requisitar revisão humana ou sinalizar lacunas). NÃO force tabelas comparativas genéricas (como tradicional vs excelência) ou cronogramas arbitrários, a menos que sejam pertinentes ao tema.",
   "readmes": {
     "dados": "Conteúdo em markdown do dados/LEIA-ME.md específico para o tema, listando quais arquivos do mundo real (como diretrizes, consensos, ementas) são recomendados inserir.",
     "assets": "Conteúdo em markdown do assets/LEIA-ME.md orientando quais esquemas visuais, fluxogramas de decisão ou mídias são recomendados inserir.",
@@ -1129,7 +1129,7 @@ Você DEVE SEMPRE responder no formato JSON válido. O formato JSON esperado é:
 Use exatamente essa estrutura de JSON e nada mais. Não inclua blocos de código markdown (como \`\`\`json ...) na raiz, apenas envie o JSON puro ou use markdown dentro do campo \"markdown\". Responda sempre em Português do Brasil (pt-BR).
 
 ### DIRETRIZES DE EXCELÊNCIA PARA O CONTEÚDO DO PLAYBOOK (skill.md):
-Para que a Skill gerada seja profissional, incrível e acima de qualquer expectativa, ela deve ser rica em conteúdo e conter obrigatoriamente as seguintes seções estruturadas no Markdown:
+Para que a Skill gerada seja profissional, rica e sob medida para o tema do usuário, ela deve ser adaptada à sua finalidade real em vez de seguir um template rígido de seções. O Markdown gerado DEVE incluir:
 
 1. **Frontmatter YAML Completo**:
    O markdown gerado DEVE iniciar com um bloco frontmatter YAML contendo:
@@ -1142,23 +1142,17 @@ Para que a Skill gerada seja profissional, incrível e acima de qualquer expecta
    endpoint: "/api/webhooks/nome-da-skill" (se trigger for webhook)
    ---
 
-2. **Diferença Fundamental (Standard vs. Augmented/Skill)**:
-   Apresente uma tabela comparativa (Markdown Table) diferenciando a forma tradicional e limitada de abordar o assunto vs. a abordagem de excelência proposta por esta Skill (TED, analítica, clínica, orientada a resultados).
+2. **Princípios Centrais ou Regras de Ouro**:
+   Mapeie as regras fundamentais de comportamento, tom de voz e diretrizes cruciais que orientam o Agente de IA especificamente nesta Skill.
 
-3. **Passo 0 - Entrevista Diagnóstica e Alinhamento**:
-   Escreva de 3 a 5 perguntas específicas de diagnóstico clínico/técnico que o agente deve confirmar com o usuário caso não estejam claras, garantindo que a entrega final atenda aos requisitos exatos do cenário.
+3. **Fluxo Operacional ou Conversacional Passo a Passo**:
+   Detone a dinâmica da conversa ou o processo de análise detalhadamente, etapa por etapa ou turno a turno (explicando o que o agente deve perguntar primeiro, como validar a resposta e como estruturar os relatórios de saída ou feedbacks finais). Apresente estruturas detalhadas de outputs ou tabelas apenas se forem pertinentes ao tema.
 
-4. **Workflow Operacional Detalhado (Com Divisão de Tempo/Etapas)**:
-   Uma tabela Markdown descrevendo a jornada passo a passo do fluxo de trabalho (ex: Bloco, Tempo Sugerido, Função e Ações/Notas do Apresentador). Isso dá ritmo e clareza para a execução.
+4. **Diretrizes e Restrições ("O que esta Skill NUNCA faz")**:
+   Escreva restrições estritas e limitações críticas (ex: nunca inferir dados que o usuário não passou, alertar sobre termos ilegíveis para revisão humana, não dar notas ou pareceres como absolutos se requererem validação profissional).
 
-5. **Instruções Detalhadas de Implementação e Gotchas**:
-   Instruções operacionais aprofundadas com regras de ouro, limites (ex: número de palavras, quantidade de slides ou densidade de dados), e boas práticas do domínio técnico/clínico.
-
-6. **Checkpoints de Recuperação e Validação (Retrieval/Testing/QA)**:
-   Regras de verificação que a IA deve realizar para auditar a própria entrega antes de dá-la como finalizada.
-
-7. **Ações Locais (Tools/Python Integration)**:
-   Caso o domínio envolva cálculos, integrações de bancos de dados locais ou processamentos de APIs, documente o papel dos scripts na subpasta \`/tools\` e como utilizá-los no playbook.`;
+5. **Ações Locais e Integrações (Se aplicável)**:
+   Se o tema envolver cálculos ou scripts locais em \`/tools\`, detalhe o papel das ferramentas Python e como executá-las.`;
 
     // Chamada direta para o Gemini 2.5 Flash usando fetch
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${actualApiKey}`;
@@ -1757,6 +1751,8 @@ ${matched.map(m => `- ${m.text}`).join('\n')}
 
     // Constrói o Prompt de Sistema com o Contexto da Skill e RAG
     const agentSystemInstruction = `Você é o Agente Executivo operando sob a AI SKILL: "${skillToUse}".
+Você DEVE obrigatoriamente realizar todas as suas interações, análises, relatórios, notas sugeridas, avaliações de critérios e respostas externas estritamente em Português do Brasil (pt-BR). Sob nenhuma hipótese responda ou gere partes da resposta em inglês, exceto para termos técnicos consagrados e impossíveis de traduzir.
+
 Abaixo estão as instruções do Playbook (skill.md) que você DEVE seguir estritamente:
 === INÍCIO DO PLAYBOOK ===
 ${playbookContent}
@@ -1767,7 +1763,7 @@ Arquivos de referência disponíveis na pasta /dados: ${JSON.stringify(dadosFile
 Scripts de automação disponíveis na pasta /tools: ${JSON.stringify(toolsScripts)}
 
 Instruções de Resposta:
-1. Raciocínio Oculto (Chain of Thought): Você DEVE sempre iniciar sua resposta abrindo a tag <thought_process> e descrever nela todo o seu raciocínio, análises e tomadas de decisão. Após concluir seu raciocínio, feche obrigatoriamente a tag com </thought_process> e então depois forneça a resposta ou pergunta ao usuário. Nunca misture o raciocínio com a resposta externa e nunca escreva a palavra "thought_process" solta fora das tags XML.
+1. Raciocínio Oculto (Chain of Thought): Você DEVE sempre iniciar sua resposta abrindo a tag <thought_process> e descrever nela todo o seu raciocínio, análises e tomadas de decisão (que também devem ser preferencialmente conduzidos em Português). Após concluir seu raciocínio, feche obrigatoriamente a tag com </thought_process> e então depois forneça a resposta ou pergunta ao usuário. Nunca misture o raciocínio com a resposta externa e nunca escreva a palavra "thought_process" solta fora das tags XML.
 2. Você deve analisar a conversa e guiar o usuário de acordo com o "Roteiro de Perguntas" do Playbook. Não entregue a resposta final até ter coletado todos os dados do roteiro.
 3. Se você precisar rodar um dos scripts de automação (da lista de scripts acima) para obter dados ou realizar cálculos, você DEVE responder estritamente com este formato JSON:
 {
@@ -1780,7 +1776,7 @@ Instruções de Resposta:
 Quando você retornar esse JSON, o sistema executará o script localmente e injetará os resultados de volta na conversa.
 4. Se você NÃO precisar chamar ferramentas no momento (apenas conversar, fazer perguntas, interagir como a persona ou avaliar o estudante), responda APENAS com texto plano direto. NÃO use JSON, NÃO use tags, NÃO coloque a resposta dentro de um campo "reply". Apenas digite sua fala/mensagem de texto diretamente.
 5. NÃO faça anúncios sobre sua própria conduta conversacional (evite frases explicativas como "Assumo o papel de farmacêutico", "Passando para o papel de paciente" ou "Iniciando modo demonstração"). Fale e aja DIRETAMENTE no personagem/persona de forma natural, realista e imersiva.
-Sempre responda em Português do Brasil (pt-BR).`;
+6. TODA E QUALQUER SAÍDA destinada ao usuário (feedbacks de critérios, relatórios de notas e conversação) DEVE SER em Português do Brasil (pt-BR).`;
 
     // Constrói contents com suporte a arquivo multimodal se enviado
     const chatContents = messages.map((m, index) => {

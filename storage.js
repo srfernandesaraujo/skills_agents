@@ -788,30 +788,14 @@ endpoint: null
 
 ${description}
 
-## Diferença Fundamental (Abordagem Tradicional vs. Abordagem com a Skill)
+## Princípios Centrais
+- **Foco e Clareza**: Respostas estruturadas e objetivas para guiar o usuário de forma eficaz.
+- **Rigor Técnico**: Entrega de análises respaldadas e contextualizadas à demanda.
 
-| Abordagem Tradicional | Abordagem de Excelência (Esta Skill) |
-|---|---|
-| Tratamento superficial ou respostas genéricas | Análise aprofundada, conceitual e orientada a regras do playbook |
-
-## Passo 0 — Alinhamento e Entrevista Diagnóstica
-
-Antes de executar, confirme com o usuário o que for essencial para a personalização do entregável:
-1. Qual é o nível de profundidade e o público-alvo do entregável?
-
-## Workflow Operacional Detalhado
-
-| Etapa | Tempo | Função | Ação |
-|---|---|---|---|
-| 1. Alinhamento | 5 min | Alinhamento inicial | Entrevista |
-
-## Diretrizes de Implementação e Gotchas
-
-- **Densidade de Informação**: Mantenha cada resposta focada, objetiva e sem rodeios.
-
-## Checkpoints de Validação (QA)
-
-- [ ] Todos os objetivos levantados no Passo 0 foram atingidos?
+## Fluxo Operacional
+1. **Entendimento**: Confirmar as premissas e o objetivo da tarefa com o usuário.
+2. **Execução**: Processar as informações fornecidas e aplicar a lógica específica da Skill.
+3. **Entrega**: Apresentar os resultados de forma polida e profissional.
 `;
 
     // Grava no Firestore os arquivos padrão
@@ -850,6 +834,15 @@ endpoint: null
 # ${title || name}
 
 ${description || 'Uma nova Skill.'}
+
+## Princípios Centrais
+- **Foco e Clareza**: Respostas estruturadas e objetivas para guiar o usuário de forma eficaz.
+- **Rigor Técnico**: Entrega de análises respaldadas e contextualizadas à demanda.
+
+## Fluxo Operacional
+1. **Entendimento**: Confirmar as premissas e o objetivo da tarefa com o usuário.
+2. **Execução**: Processar as informações fornecidas e aplicar a lógica específica da Skill.
+3. **Entrega**: Apresentar os resultados de forma polida e profissional.
 `;
     fs.writeFileSync(path.join(skillPath, 'skill.md'), playbookContent);
 

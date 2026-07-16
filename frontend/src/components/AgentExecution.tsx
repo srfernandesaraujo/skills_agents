@@ -354,7 +354,14 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
       });
 
       if (!response.ok) {
-        throw new Error('Erro na conexão com o Motor do Agente');
+        let errorMsg = 'Erro na conexão com o Motor do Agente';
+        try {
+          const errData = await response.json();
+          if (errData && errData.error) {
+            errorMsg = errData.error;
+          }
+        } catch (e) {}
+        throw new Error(errorMsg);
       }
 
       const data = await response.json();
@@ -441,7 +448,14 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
       });
 
       if (!response.ok) {
-        throw new Error('Erro na conexão com o Motor do Agente');
+        let errorMsg = 'Erro na conexão com o Motor do Agente';
+        try {
+          const errData = await response.json();
+          if (errData && errData.error) {
+            errorMsg = errData.error;
+          }
+        } catch (e) {}
+        throw new Error(errorMsg);
       }
 
       const data = await response.json();
