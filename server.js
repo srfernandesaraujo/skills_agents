@@ -1232,13 +1232,14 @@ Para que a Skill gerada seja profissional, rica e sob medida para o tema do usu�
 function parseToolCall(cleanedReply) {
   if (!cleanedReply) return null;
   
-  let cleaned = cleanedReply.replace(/^```json/, '').replace(/```$/, '').trim();
+  let cleaned = cleanedReply.replace(/^```json\s*/, '').replace(/\s*```$/, '').trim();
   
   // Trata formato malformado com colchetes ["callTool": ... ] -> {"callTool": ... }
   if (cleaned.startsWith('["callTool":') && cleaned.endsWith(']')) {
     cleaned = '{' + cleaned.slice(1, -1) + '}';
   }
   
+  // 1. Tenta parse direto (resposta é JSON puro)
   try {
     const parsed = JSON.parse(cleaned);
     if (Array.isArray(parsed)) {
@@ -1249,32 +1250,68 @@ function parseToolCall(cleanedReply) {
       return parsed;
     }
   } catch (e) {
-    // Fallback robusto usando regex em caso de JSON malformado
-    try {
-      const callToolRegex = /"callTool"\s*:\s*"([^"]+)"/;
-      const argsRegex = /"args"\s*:\s*({[\s\S]+})/;
+    // Não é JSON puro, continua para os fallbacks
+  }
+
+  // 2. Tenta extrair um bloco JSON embutido em texto narrativo (ex: "Vou chamar o script. ```json {...} ```" ou "texto { "callTool": ... } texto")
+  try {
+    // Primeiro tenta blocos de código ```json ... ```
+    const codeBlockRegex = /```json\s*([\s\S]*?)```/i;
+    const codeBlockMatch = cleaned.match(codeBlockRegex);
+    if (codeBlockMatch) {
+      try {
+        const parsed = JSON.parse(codeBlockMatch[1].trim());
+        if (parsed && parsed.callTool) return parsed;
+      } catch (innerErr) { /* ignora */ }
+    }
+
+    // Depois tenta localizar { "callTool": ... } dentro do texto
+    const jsonExtractRegex = /\{[^{}]*"callTool"\s*:\s*"[^"]+"\s*,\s*"args"\s*:\s*\{[\s\S]*?\}\s*\}/;
+    const jsonMatch = cleaned.match(jsonExtractRegex);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (parsed && parsed.callTool) return parsed;
+      } catch (innerErr) { /* ignora */ }
+    }
+
+    // Fallback final: regex puro para extrair toolName e args separadamente
+    const callToolRegex = /"callTool"\s*:\s*"([^"]+)"/;
+    const toolMatch = cleaned.match(callToolRegex);
+    
+    if (toolMatch) {
+      const toolName = toolMatch[1];
+      let args = {};
       
-      const toolMatch = cleaned.match(callToolRegex);
-      const argsMatch = cleaned.match(argsRegex);
-      
-      if (toolMatch) {
-        const toolName = toolMatch[1];
-        let args = {};
-        if (argsMatch) {
-          try {
-            let argsStr = argsMatch[1];
-            if (argsStr.endsWith(']')) argsStr = argsStr.slice(0, -1);
-            args = JSON.parse(argsStr);
-          } catch (argsErr) {
-            console.error('Erro ao fazer parse dos args por regex:', argsErr);
+      // Tenta extrair o objeto args usando um approach de busca balanceada de chaves
+      const argsStartRegex = /"args"\s*:\s*\{/;
+      const argsStartMatch = cleaned.match(argsStartRegex);
+      if (argsStartMatch) {
+        const startIdx = cleaned.indexOf(argsStartMatch[0]) + argsStartMatch[0].length - 1;
+        let depth = 0;
+        let endIdx = startIdx;
+        for (let i = startIdx; i < cleaned.length; i++) {
+          if (cleaned[i] === '{') depth++;
+          else if (cleaned[i] === '}') {
+            depth--;
+            if (depth === 0) {
+              endIdx = i + 1;
+              break;
+            }
           }
         }
-        return { callTool: toolName, args };
+        try {
+          args = JSON.parse(cleaned.substring(startIdx, endIdx));
+        } catch (argsErr) {
+          console.error('Erro ao fazer parse dos args por busca balanceada:', argsErr);
+        }
       }
-    } catch (regexErr) {
-      console.error('Falha no parser fallback regex:', regexErr);
+      return { callTool: toolName, args };
     }
+  } catch (regexErr) {
+    console.error('Falha no parser fallback:', regexErr);
   }
+  
   return null;
 }
 
@@ -1829,7 +1866,7 @@ Scripts de automação disponíveis na pasta /tools: ${JSON.stringify(toolsScrip
 Instruções de Resposta:
 1. Raciocínio Oculto (Chain of Thought): Você DEVE sempre iniciar sua resposta abrindo a tag <thought_process> e descrever nela todo o seu raciocínio, análises e tomadas de decisão (que também devem ser preferencialmente conduzidos em Português). Após concluir seu raciocínio, feche obrigatoriamente a tag com </thought_process> e então depois forneça a resposta ou pergunta ao usuário. Nunca misture o raciocínio com a resposta externa e nunca escreva a palavra "thought_process" solta fora das tags XML.
 2. Você deve analisar a conversa e guiar o usuário de acordo com o "Roteiro de Perguntas" do Playbook. Não entregue a resposta final até ter coletado todos os dados do roteiro.
-3. Se você precisar rodar um dos scripts de automação (da lista de scripts acima) para obter dados ou realizar cálculos, você DEVE responder estritamente com este formato JSON:
+3. CHAMADA DE FERRAMENTA (CRÍTICO): Se você precisar rodar um dos scripts de automação (da lista de scripts acima) para obter dados ou realizar cálculos, sua resposta INTEIRA (após o </thought_process>) DEVE ser EXCLUSIVAMENTE o JSON abaixo, sem NENHUM texto antes, depois ou ao redor dele:
 {
   "callTool": "nome_do_script.py",
   "args": {
@@ -1837,11 +1874,12 @@ Instruções de Resposta:
     "arg2": "valor2"
   }
 }
+ATENÇÃO: Não escreva explicações, introduções, comentários ou qualquer texto fora do JSON. NÃO escreva "Vou chamar o script..." antes do JSON. Apenas o JSON puro. Se você incluir texto junto com o JSON, o sistema não conseguirá executar o script e a funcionalidade falhará.
 Quando você retornar esse JSON, o sistema executará o script localmente e injetará os resultados de volta na conversa.
 4. Se você NÃO precisar chamar ferramentas no momento (apenas conversar, fazer perguntas, interagir como a persona ou avaliar o estudante), responda APENAS com texto plano direto. NÃO use JSON, NÃO use tags, NÃO coloque a resposta dentro de um campo "reply". Apenas digite sua fala/mensagem de texto diretamente.
 5. NÃO faça anúncios sobre sua própria conduta conversacional (evite frases explicativas como "Assumo o papel de farmacêutico", "Passando para o papel de paciente" ou "Iniciando modo demonstração"). Fale e aja DIRETAMENTE no personagem/persona de forma natural, realista e imersiva.
 6. TODA E QUALQUER SAÍDA destinada ao usuário (feedbacks de critérios, relatórios de notas e conversação) DEVE SER em Português do Brasil (pt-BR).
-7. Geração de Links de Download: Quando você gerar arquivos de saída (como planilhas Excel) e quiser fornecer o link ao usuário, use obrigatoriamente este formato de markdown: \`[Download](/api/skills/NOME_DA_SKILL/media?path=CAMINHO_DO_ARQUIVO)\` (por exemplo: \`[Download](/api/skills/corretor-de-provas-interativo/media?path=dados/notas_finais.xlsx)\`). O link de download deve sempre começar com a barra "/".`;
+7. Geração de Links de Download (OBRIGATÓRIO): Quando um script de automação gerar um arquivo de saída (como planilhas Excel, PDFs, etc.) com sucesso, você DEVE OBRIGATORIAMENTE incluir um link de download na sua resposta ao usuário. Use EXATAMENTE este formato markdown: [Baixar NOME_DO_ARQUIVO](/api/skills/NOME_DA_SKILL/media?path=CAMINHO_DO_ARQUIVO). Exemplo concreto: [Baixar notas_finais.xlsx](/api/skills/corretor-de-provas-interativo/media?path=dados/notas_finais.xlsx). O link DEVE começar com a barra "/". Se o script retornou sucesso e indicou um caminho de arquivo, você NUNCA deve omitir o link de download.`;
 
     // Constrói contents com suporte a arquivo multimodal se enviado
     const chatContents = messages.map((m, index) => {
@@ -2050,7 +2088,11 @@ Resultado de saída (stdout):
 ${toolStdout}
 ${toolStderr ? '\nLogs de Erros (stderr):\n' + toolStderr : ''}
 
-Por favor, analise a saída do script e continue o raciocínio. Se precisar rodar outro comando ou checagem do script para complementar a auditoria, faça a chamada correspondente usando o formato JSON { "callTool": ... }. Se todas as análises estiverem concluídas, apresente os resultados finais formatados (tabela markdown, parecer clínico, recomendações) conforme as orientações do playbook.`;
+INSTRUÇÕES PÓS-EXECUÇÃO:
+- Se o script gerou um arquivo com sucesso (ex: "sucesso": true), você DEVE incluir um link de download na sua resposta usando o formato: [Baixar NOME_DO_ARQUIVO](/api/skills/${skillToUse}/media?path=CAMINHO_DO_ARQUIVO). Use o caminho do arquivo informado na saída do script (campo "caminho_saida" ou "download_url").
+- Apresente os resultados finais formatados (tabela markdown, parecer clínico, recomendações) conforme as orientações do playbook.
+- Se precisar rodar outro script, responda EXCLUSIVAMENTE com o JSON { "callTool": ... }, sem texto adicional.
+- Lembre-se: sua resposta ao usuário deve ser em texto plano com markdown. NÃO use JSON na resposta final.`;
 
       // Atualiza o histórico de mensagens para a próxima chamada
       currentChatContents.push({ role: 'model', parts: [{ text: JSON.stringify(currentParsedResult) }] });
