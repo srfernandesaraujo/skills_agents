@@ -512,19 +512,48 @@ app.get('/api/skills/:name/media', async (req, res) => {
   }
 
   try {
+    // Extrai o nome do arquivo a partir do caminho para o Content-Disposition
+    const fileName = path.basename(filePath);
+    const ext = path.extname(fileName).toLowerCase();
+    
+    // Mapeia extensões comuns para MIME types
+    const mimeMap = {
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.xls': 'application/vnd.ms-excel',
+      '.pdf': 'application/pdf',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.zip': 'application/zip',
+      '.csv': 'text/csv',
+      '.json': 'application/json',
+      '.txt': 'text/plain',
+    };
+
     if (storage.useFirebase) {
-      const file = await storage.getFileContent(name, filePath);
       const buffer = await storage.downloadBinaryFile(name, filePath);
-      res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
+      if (!buffer) {
+        return res.status(404).json({ error: 'Arquivo não encontrado no Storage' });
+      }
+      const contentType = mimeMap[ext] || 'application/octet-stream';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+      res.setHeader('Content-Length', buffer.length);
       res.send(buffer);
     } else {
       const fullPath = safePath(path.join(SKILLS_DIR, name), filePath);
       if (!fs.existsSync(fullPath)) {
         return res.status(404).json({ error: 'Arquivo não encontrado' });
       }
+      const contentType = mimeMap[ext] || 'application/octet-stream';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
       res.sendFile(fullPath);
     }
   } catch (error) {
+    console.error('[MEDIA DOWNLOAD ERROR]', error);
     res.status(500).json({ error: 'Erro ao servir arquivo de mídia: ' + error.message });
   }
 });
