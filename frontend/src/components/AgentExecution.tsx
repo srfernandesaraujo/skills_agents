@@ -716,7 +716,7 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
     html = html.replace(/^\s*\*\s+(.*?)$/gm, '<li>$1</li>');
 
     // Links de Download (flexível para qualquer texto e normalizando caminhos relativos de media)
-    html = html.replace(/\[(.*?)\]\((.*?media\?path=.*?)\)/gi, (match, text, url) => {
+    html = html.replace(/\[(.*?)\]\((.*?media\?path=.*?)\)/gi, (_, text, url) => {
       const label = text.toLowerCase() === 'download' ? 'Baixar Arquivo Gerado' : `Baixar ${text}`;
       let normalizedUrl = url;
       if (!url.startsWith('/') && !url.startsWith('http')) {
