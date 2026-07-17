@@ -1408,6 +1408,20 @@ function parsePlaybookFrontmatter(playbookContent) {
   return result;
 }
 
+// Verifica se o MIME type de um arquivo é suportado como input multimodal direto na API do Gemini
+function isMimeTypeSupportedByGemini(mimeType) {
+  if (!mimeType) return false;
+  const mt = mimeType.toLowerCase();
+  if (mt.startsWith('image/') || mt.startsWith('audio/') || mt.startsWith('video/') || mt.startsWith('text/')) {
+    return true;
+  }
+  return [
+    'application/pdf',
+    'application/json',
+    'application/xml'
+  ].includes(mt);
+}
+
 // Sincroniza e baixa arquivos do Firebase Storage para o diretório local da sandbox
 async function downloadSkillFilesToSandbox(skillName, sandboxDir) {
   if (!storage.useFirebase) return;
@@ -1760,7 +1774,7 @@ Se nenhuma skill se aplicar ao pedido do usuário, responda com needsSkill: fals
         const isLastMessage = index === messages.length - 1;
         const parts = [{ text: m.content || (isLastMessage && fileData ? 'Analise o arquivo anexo.' : '') }];
         
-        if (isLastMessage && m.role === 'user' && fileData && fileMime) {
+        if (isLastMessage && m.role === 'user' && fileData && fileMime && isMimeTypeSupportedByGemini(fileMime)) {
           parts.push({
             inlineData: {
               mimeType: fileMime,
@@ -1969,7 +1983,7 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
       
       const parts = [{ text: msgText || (isLastMessage && fileData ? 'Analise o arquivo anexo.' : '') }];
       
-      if (isLastMessage && m.role === 'user' && fileData && fileMime) {
+      if (isLastMessage && m.role === 'user' && fileData && fileMime && isMimeTypeSupportedByGemini(fileMime)) {
         parts.push({
           inlineData: {
             mimeType: fileMime,
