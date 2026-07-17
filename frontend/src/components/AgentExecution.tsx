@@ -216,6 +216,13 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
@@ -224,9 +231,20 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
   };
 
   const processFile = (file: File) => {
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
-    if (!allowedTypes.includes(file.type)) {
-      alert('Formato de arquivo não suportado. Envie apenas imagens (JPEG, PNG, WebP) ou PDFs.');
+    const allowedTypes = [
+      'image/jpeg', 
+      'image/png', 
+      'image/webp', 
+      'application/pdf',
+      'text/csv',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel'
+    ];
+    const allowedExtensions = ['jpg', 'jpeg', 'png', 'webp', 'pdf', 'csv', 'xlsx', 'xls'];
+    const fileExt = file.name.split('.').pop()?.toLowerCase() || '';
+
+    if (!allowedTypes.includes(file.type) && !allowedExtensions.includes(fileExt)) {
+      alert('Formato de arquivo não suportado. Envie apenas imagens (JPEG, PNG, WebP), PDFs ou planilhas (CSV, XLSX, XLS).');
       return;
     }
 
@@ -934,12 +952,25 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
                           )}
                           <span className="attachment-name">{msg.fileName}</span>
                         </div>
+                      ) : msg.fileMime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || 
+                          msg.fileMime === 'application/vnd.ms-excel' || 
+                          msg.fileMime === 'text/csv' ||
+                          msg.fileName?.endsWith('.xlsx') ||
+                          msg.fileName?.endsWith('.xls') ||
+                          msg.fileName?.endsWith('.csv') ? (
+                        <div className="attachment-pdf-wrapper">
+                          <Database size={20} className="text-green" style={{ color: 'var(--accent-green)' }} />
+                          <div className="attachment-pdf-info">
+                            <span className="attachment-name">{msg.fileName}</span>
+                            <p>Planilha de Dados</p>
+                          </div>
+                        </div>
                       ) : (
                         <div className="attachment-pdf-wrapper">
                           <FileText size={20} className="text-purple" />
                           <div className="attachment-pdf-info">
                             <span className="attachment-name">{msg.fileName}</span>
-                            <p>Documento PDF</p>
+                            <p>{msg.fileMime === 'application/pdf' ? 'Documento PDF' : 'Arquivo'}</p>
                           </div>
                         </div>
                       )}
@@ -1021,6 +1052,13 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
             <div className="attached-file-info">
               {attachedFile.mimeType.startsWith('image/') ? (
                 <img src={attachedFile.previewUrl} alt={attachedFile.name} className="attached-img-thumb" />
+              ) : (attachedFile.mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+                   attachedFile.mimeType === 'application/vnd.ms-excel' ||
+                   attachedFile.mimeType === 'text/csv' ||
+                   attachedFile.name.endsWith('.xlsx') ||
+                   attachedFile.name.endsWith('.xls') ||
+                   attachedFile.name.endsWith('.csv')) ? (
+                <Database size={18} className="text-green" style={{ color: 'var(--accent-green)' }} />
               ) : (
                 <FileText size={18} className="text-purple" />
               )}
@@ -1039,24 +1077,33 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
             ref={fileInputRef} 
             style={{ display: 'none' }} 
             onChange={handleFileChange}
-            accept=".pdf,image/png,image/jpeg,image/webp"
+            accept=".pdf,image/png,image/jpeg,image/webp,.xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
           />
           <button 
             type="button" 
             className="btn-attach" 
             onClick={() => fileInputRef.current?.click()}
             disabled={isLoading}
-            title="Anexar arquivo (PDF ou Imagem)"
+            title="Anexar arquivo (Imagens, PDFs ou Planilhas)"
           >
             <Paperclip size={16} />
           </button>
-          <input
-            type="text"
+          <textarea
             className="input-text chat-input-field"
             placeholder={isLoading ? "Agente trabalhando..." : "Digite sua mensagem..."}
             value={inputValue}
             onChange={e => setInputValue(e.target.value)}
+            onKeyDown={handleKeyDown}
             disabled={isLoading}
+            rows={1}
+            style={{
+              resize: 'none',
+              minHeight: '38px',
+              maxHeight: '120px',
+              paddingTop: '8px',
+              paddingBottom: '8px',
+              overflowY: 'auto'
+            }}
           />
           <button 
             type="submit" 

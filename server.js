@@ -1408,6 +1408,60 @@ function parsePlaybookFrontmatter(playbookContent) {
   return result;
 }
 
+// Sincroniza e baixa arquivos do Firebase Storage para o diretório local da sandbox
+async function downloadSkillFilesToSandbox(skillName, sandboxDir) {
+  if (!storage.useFirebase) return;
+  console.log(`📥 [SANDBOX] Sincronizando arquivos do Firebase para a sandbox local da skill: ${skillName}...`);
+  
+  try {
+    const details = await storage.getSkill(skillName);
+    const findFilesRecursive = (nodes) => {
+      const list = [];
+      for (const node of nodes) {
+        if (node.type === 'file') {
+          list.push(node.path);
+        } else if (node.children) {
+          list.push(...findFilesRecursive(node.children));
+        }
+      }
+      return list;
+    };
+    
+    const allFiles = findFilesRecursive(details.files || []);
+    for (const filePath of allFiles) {
+      if (filePath.startsWith('dados/') || filePath.startsWith('assets/')) {
+        try {
+          const fileContent = await storage.getFileContent(skillName, filePath);
+          const localDestPath = path.join(sandboxDir, filePath);
+          const localDestDir = path.dirname(localDestPath);
+          
+          if (!fs.existsSync(localDestDir)) {
+            fs.mkdirSync(localDestDir, { recursive: true });
+          }
+          
+          if (fileContent.isBinary && fileContent.url) {
+            const response = await fetch(fileContent.url);
+            if (response.ok) {
+              const arrayBuffer = await response.arrayBuffer();
+              fs.writeFileSync(localDestPath, Buffer.from(arrayBuffer));
+              console.log(`📥 [SANDBOX] Baixado binário com sucesso: ${filePath}`);
+            } else {
+              throw new Error(`Falha ao baixar do Storage: ${response.statusText}`);
+            }
+          } else {
+            fs.writeFileSync(localDestPath, fileContent.content || '', 'utf8');
+            console.log(`📥 [SANDBOX] Gravado arquivo de texto: ${filePath}`);
+          }
+        } catch (fileErr) {
+          console.error(`Erro ao baixar arquivo ${filePath} para a sandbox:`, fileErr);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`Erro ao sincronizar arquivos para a sandbox da skill ${skillName}:`, err);
+  }
+}
+
 // Executa um script Python em ambiente de sandbox (Docker ou venv local isolado)
 async function runPythonSandbox(skillName, scriptPath, tempArgsFile, useDocker) {
   const canUseDocker = useDocker && isDockerAvailable;
@@ -1441,6 +1495,10 @@ async function runPythonSandbox(skillName, scriptPath, tempArgsFile, useDocker) 
   const sandboxDir = storage.useFirebase 
     ? path.join(process.cwd(), '.sandboxes', skillName) 
     : path.join(SKILLS_DIR, skillName);
+
+  if (storage.useFirebase) {
+    await downloadSkillFilesToSandbox(skillName, sandboxDir);
+  }
 
   if (!fs.existsSync(sandboxDir)) {
     fs.mkdirSync(sandboxDir, { recursive: true });
@@ -1778,6 +1836,20 @@ Se nenhuma skill se aplicar ao pedido do usuário, responda com needsSkill: fals
 
   // --- EXECUÇÃO COM SKILL ATIVA ---
   try {
+    // Se o usuário anexou um arquivo no chat, salva-o automaticamente na pasta dados/ da Skill
+    if (fileData && fileName) {
+      try {
+        const fileBuffer = Buffer.from(fileData, 'base64');
+        const mimeToUse = fileMime || 'application/octet-stream';
+        console.log(`[FILE ATTACH] Salvando arquivo anexado ${fileName} em dados/ para a skill ${skillToUse}...`);
+        await storage.saveBinaryFile(skillToUse, `dados/${fileName}`, fileBuffer, mimeToUse);
+        steps.push({ step: 'file_saved', detail: `Arquivo '${fileName}' salvo na pasta dados/ da Skill.` });
+      } catch (saveErr) {
+        console.error(`Erro ao salvar arquivo anexado na Skill ${skillToUse}:`, saveErr);
+        steps.push({ step: 'error', detail: `Falha ao salvar anexo: ${saveErr.message}` });
+      }
+    }
+
     let playbookContent = '';
     try {
       const file = await storage.getFileContent(skillToUse, 'skill.md');
