@@ -715,12 +715,13 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
     html = html.replace(/^\s*-\s+(.*?)$/gm, '<li>$1</li>');
     html = html.replace(/^\s*\*\s+(.*?)$/gm, '<li>$1</li>');
 
-    // Links de Download (flexível para qualquer texto e normalizando caminhos relativos de media)
+    // Links de Download (flexível para qualquer texto e normalizando caminhos relativos de media com backendUrl absoluta)
     html = html.replace(/\[(.*?)\]\((.*?media\?path=.*?)\)/gi, (_, text, url) => {
       const label = text.toLowerCase() === 'download' ? 'Baixar Arquivo Gerado' : `Baixar ${text}`;
       let normalizedUrl = url;
-      if (!url.startsWith('/') && !url.startsWith('http')) {
-        normalizedUrl = '/' + url;
+      if (!url.startsWith('http')) {
+        const cleanPath = url.startsWith('/') ? url.substring(1) : url;
+        normalizedUrl = `${backendUrl}/${cleanPath}`;
       }
       return `<a href="${normalizedUrl}" download class="chat-download-link"><Download size="12" /> ${label}</a>`;
     });
