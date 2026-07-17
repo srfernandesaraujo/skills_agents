@@ -1240,21 +1240,29 @@ def main():
                 json_args = json.load(f)
             
             new_argv = [sys.argv[0]]
-            comando = json_args.get('comando')
-            if comando:
-                new_argv.append(comando)
             
-            for k, v in json_args.items():
-                if k in ('comando', 'skill_name'):
-                    continue
+            if isinstance(json_args, list):
+                # Se for uma lista direta de argumentos, ex: ["explorar", "--input", "dados.csv"]
+                new_argv.extend([str(item) for item in json_args])
+            elif isinstance(json_args, dict):
+                # Se for um objeto dicionário
+                comando = json_args.get('comando') or json_args.get('command') or json_args.get('action')
+                if comando:
+                    new_argv.append(str(comando))
                 
-                flag = f"--{k}"
-                if isinstance(v, bool):
-                    if v:
+                for k, v in json_args.items():
+                    if k in ('comando', 'command', 'action', 'skill_name'):
+                        continue
+                    
+                    flag = k if k.startswith('-') else f"--{k}"
+                    if isinstance(v, bool):
+                        if v:
+                            new_argv.append(flag)
+                    elif v is not None:
                         new_argv.append(flag)
-                elif v is not None:
-                    new_argv.append(flag)
-                    new_argv.append(str(v))
+                        new_argv.append(str(v))
+            else:
+                raise ValueError("JSON de argumentos deve ser uma lista ou um objeto.")
             
             sys.argv = new_argv
         except Exception as e:
