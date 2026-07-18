@@ -122,6 +122,7 @@ completa de comandos disponíveis em `scripts/stats_toolkit.py`:
 |---|---|
 | `explorar` | Inventário de colunas/tipos/N |
 | `calcular_diferenca` | Cria coluna calculada (ex: Pressao_6meses - Pressao_Basal = Variacao_PAS) e salva na planilha |
+| `gerar_pdf` | Gera relatório completo em PDF premium (Tabela 1, hipóteses, post-hoc e Métodos Vancouver) |
 | `descritivas` | Média, DP, mediana, IC95%, etc. (com ou sem grupo) |
 | `normalidade` | Shapiro-Wilk / KS, por grupo |
 | `homogeneidade_variancia` | Levene |
@@ -188,7 +189,7 @@ Regras para este documento:
 - Não invente interpretação clínica/teórica além do que os números sustentam
   — significância estatística não é o mesmo que relevância prática; sinalize
   isso quando o tamanho de efeito for pequeno mesmo com p significativo.
-- Apresente o relatório estatístico final diretamente na tela do chat em texto formatado Markdown (com títulos, tabelas claras e interpretações completas). O único script Python de automação desta skill é `stats_toolkit.py` — não tente invocar ferramentas inexistentes como `docx.py` ou `report.py`.
+- Apresente o relatório estatístico final em texto formatado Markdown na tela e rode o comando `gerar_pdf` no `stats_toolkit.py` (`{"callTool": "stats_toolkit.py", "args": {"comando": "gerar_pdf", "input": "dados/dados_ensaio_clinico.xlsx", "var": "Variacao_PAS", "group": "Grupo_Tratamento"}}`) para salvar o arquivo PDF em `dados/Relatorio_Estatistico_Premium.pdf` e fornecer o link de download do PDF ao usuário (`[Relatorio_Estatistico_Premium.pdf](/api/skills/estatistico-particular/media?path=dados/Relatorio_Estatistico_Premium.pdf)`).
 
 ## Referências desta skill
 
