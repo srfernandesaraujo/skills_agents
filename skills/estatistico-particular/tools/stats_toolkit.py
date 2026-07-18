@@ -1281,8 +1281,9 @@ def main():
             elif isinstance(json_args, dict):
                 # Se for um objeto dicionário
                 comando = json_args.get('comando') or json_args.get('command') or json_args.get('action')
-                if comando:
-                    new_argv.append(str(comando))
+                if not comando:
+                    comando = 'explorar'
+                new_argv.append(str(comando))
                 
                 for k, v in json_args.items():
                     if k in ('comando', 'command', 'action', 'skill_name'):
