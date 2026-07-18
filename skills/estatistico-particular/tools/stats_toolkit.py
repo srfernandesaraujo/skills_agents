@@ -21,6 +21,7 @@ Comandos disponíveis (rode --help em cada um):
     kaplan_meier, correcao_multiplas
 """
 
+import os
 import sys
 import json
 import argparse
@@ -34,6 +35,18 @@ from scipy import stats
 # --------------------------------------------------------------------------- #
 
 def carregar_dados(path, sheet=None):
+    if not os.path.exists(path):
+        filename = os.path.basename(path)
+        candidatos = [
+            os.path.join("dados", filename),
+            os.path.join("dados", path),
+            filename
+        ]
+        for c in candidatos:
+            if os.path.exists(c):
+                path = c
+                break
+
     if path.lower().endswith((".xlsx", ".xls")):
         return pd.read_excel(path, sheet_name=sheet if sheet else 0)
     elif path.lower().endswith(".csv"):
