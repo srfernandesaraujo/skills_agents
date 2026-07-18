@@ -188,9 +188,7 @@ Regras para este documento:
 - Não invente interpretação clínica/teórica além do que os números sustentam
   — significância estatística não é o mesmo que relevância prática; sinalize
   isso quando o tamanho de efeito for pequeno mesmo com p significativo.
-- Ofereça, ao final, gerar também uma versão em Markdown se o usuário quiser
-  reaproveitar o texto em outro lugar (mas o padrão é `.docx`, conforme
-  preferência já indicada pelo usuário).
+- Apresente o relatório estatístico final diretamente na tela do chat em texto formatado Markdown (com títulos, tabelas claras e interpretações completas). O único script Python de automação desta skill é `stats_toolkit.py` — não tente invocar ferramentas inexistentes como `docx.py` ou `report.py`.
 
 ## Referências desta skill
 

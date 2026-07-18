@@ -1947,6 +1947,7 @@ ${matchedMemoriesPrompt}
 
 Arquivos de referência disponíveis na pasta /dados: ${JSON.stringify(dadosFiles)}
 Scripts de automação disponíveis na pasta /tools: ${JSON.stringify(toolsScripts)}
+ATENÇÃO CRÍTICA: Os ÚNICOS scripts de automação válidos são os listados acima (${JSON.stringify(toolsScripts)}). NUNCA tente chamar scripts inexistentes como docx.py, report.py ou relatorio.py. Para gerar relatórios ou pareceres finais, apresente a análise formatada diretamente em texto Markdown para o usuário.
 
 Instruções de Resposta:
 1. Raciocínio Oculto (Chain of Thought): Você DEVE sempre iniciar sua resposta abrindo a tag <thought_process> e descrever nela todo o seu raciocínio, análises e tomadas de decisão (que também devem ser preferencialmente conduzidos em Português). Após concluir seu raciocínio, feche obrigatoriamente a tag com </thought_process> e então depois forneça a resposta ou pergunta ao usuário. Nunca misture o raciocínio com a resposta externa e nunca escreva a palavra "thought_process" solta fora das tags XML.
@@ -2108,6 +2109,36 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
       let cleanToolName = path.basename(toolName);
       if (!cleanToolName.endsWith('.py')) {
         cleanToolName += '.py';
+      }
+
+      // Valida se o script existe entre os scripts de automação da skill
+      if (toolsScripts && toolsScripts.length > 0 && !toolsScripts.includes(cleanToolName) && !toolsScripts.includes(path.basename(toolName))) {
+        console.warn(`[TOOL WARNING] Tentativa de invocar script inexistente '${toolName}' na skill '${skillToUse}'. Scripts válidos:`, toolsScripts);
+        const systemFeedbackMsg = `System Notification: O script '${toolName}' NÃO existe na pasta de ferramentas da skill. Os ÚNICOS scripts disponíveis são: ${JSON.stringify(toolsScripts)}. NÃO tente inventar scripts inexistentes (como docx.py, report.py). Por favor, apresente o relatório ou parecer estatístico diretamente ao usuário em texto formatado Markdown.`;
+
+        currentChatContents.push({ role: 'model', parts: [{ text: JSON.stringify(currentParsedResult) }] });
+        currentChatContents.push({ role: 'user', parts: [{ text: systemFeedbackMsg }] });
+
+        const response = await fetch(chatUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: currentChatContents,
+            systemInstruction: { parts: [{ text: agentSystemInstruction }] }
+          })
+        });
+
+        if (response.ok) {
+          const chatData = await response.json();
+          const rawReply = chatData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          const loopParsed = extractThoughtAndClean(rawReply);
+          if (loopParsed.thought) {
+            trace.thoughtProcess = (trace.thoughtProcess ? trace.thoughtProcess + '\n' : '') + loopParsed.thought;
+          }
+          currentCleanedReply = loopParsed.cleaned;
+          currentParsedResult = parseToolCall(currentCleanedReply);
+          continue;
+        }
       }
 
       let scriptPath = '';
