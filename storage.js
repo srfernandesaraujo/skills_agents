@@ -519,11 +519,29 @@ export async function getSkill(name) {
 export async function getFileContent(name, filePath) {
   if (useFirebase && db) {
     const docId = getDocIdFromPath(filePath);
-    const docRef = db.collection('skills').doc(name).collection('files').doc(docId);
-    const doc = await docRef.get();
+    let docRef = db.collection('skills').doc(name).collection('files').doc(docId);
+    let doc = await docRef.get();
 
     if (!doc.exists) {
-      throw new Error('Arquivo não encontrado no Firebase');
+      const baseName = path.basename(filePath);
+      const baseDocId = getDocIdFromPath(baseName);
+      if (baseDocId !== docId) {
+        docRef = db.collection('skills').doc(name).collection('files').doc(baseDocId);
+        doc = await docRef.get();
+      }
+    }
+
+    if (!doc.exists) {
+      const baseName = path.basename(filePath);
+      const toolsDocId = getDocIdFromPath(`tools/${baseName}`);
+      if (toolsDocId !== docId) {
+        docRef = db.collection('skills').doc(name).collection('files').doc(toolsDocId);
+        doc = await docRef.get();
+      }
+    }
+
+    if (!doc.exists) {
+      throw new Error(`Arquivo não encontrado no Firebase: ${filePath}`);
     }
 
     const data = doc.data();

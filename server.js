@@ -2105,19 +2105,32 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
 
       steps.push({ step: 'tool_executing', detail: `Invocando script Python: ${toolName}...` });
 
+      let cleanToolName = path.basename(toolName);
+      if (!cleanToolName.endsWith('.py')) {
+        cleanToolName += '.py';
+      }
+
       let scriptPath = '';
       let tempScriptFile = '';
       
       if (storage.useFirebase) {
-        const fileContent = await storage.getFileContent(skillToUse, `tools/${toolName}`);
-        tempScriptFile = path.join(process.cwd(), `.tmp_script_${Date.now()}_${toolName}`);
+        let fileContent;
+        try {
+          fileContent = await storage.getFileContent(skillToUse, `tools/${cleanToolName}`);
+        } catch (e) {
+          fileContent = await storage.getFileContent(skillToUse, cleanToolName);
+        }
+        tempScriptFile = path.join(process.cwd(), `.tmp_script_${Date.now()}_${cleanToolName}`);
         fs.writeFileSync(tempScriptFile, fileContent.content || '');
         scriptPath = tempScriptFile;
       } else {
         const toolsPath = path.join(SKILLS_DIR, skillToUse, 'tools');
-        scriptPath = path.join(toolsPath, toolName);
+        scriptPath = path.join(toolsPath, cleanToolName);
         if (!fs.existsSync(scriptPath)) {
-          throw new Error(`Script de ferramenta não encontrado: ${toolName}`);
+          scriptPath = path.join(SKILLS_DIR, skillToUse, cleanToolName);
+        }
+        if (!fs.existsSync(scriptPath)) {
+          throw new Error(`Script de ferramenta não encontrado: ${cleanToolName}`);
         }
       }
 
