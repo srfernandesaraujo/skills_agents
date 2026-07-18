@@ -1966,7 +1966,7 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
 4. Se você NÃO precisar chamar ferramentas no momento (apenas conversar, fazer perguntas, interagir como a persona ou avaliar o estudante), responda APENAS com texto plano direto. NÃO use JSON, NÃO use tags, NÃO coloque a resposta dentro de um campo "reply". Apenas digite sua fala/mensagem de texto diretamente.
 5. NÃO faça anúncios sobre sua própria conduta conversacional (evite frases explicativas como "Assumo o papel de farmacêutico", "Passando para o papel de paciente" ou "Iniciando modo demonstração"). Fale e aja DIRETAMENTE no personagem/persona de forma natural, realista e imersiva.
 6. TODA E QUALQUER SAÍDA destinada ao usuário (feedbacks de critérios, relatórios de notas e conversação) DEVE SER em Português do Brasil (pt-BR).
-7. Geração de Links de Download (OBRIGATÓRIO): Quando um script de automação gerar ou modificar um arquivo de dados/saída (como planilhas Excel .xlsx, .csv, PDFs, etc.) com sucesso na pasta /dados, você DEVE OBRIGATORIAMENTE incluir um link de download na sua resposta. Use EXATAMENTE este formato markdown: [NOME_DO_ARQUIVO](/api/skills/NOME_DA_SKILL/media?path=CAMINHO_DO_ARQUIVO). NUNCA crie links de download para os scripts de código em /tools (como stats_toolkit.py), apenas cite o nome do script em texto simples. Não adicione a palavra 'Baixar' dentro dos colchetes do link.`;
+7. Geração de Links de Download (OBRIGATÓRIO): Quando um script gerar um arquivo (como PDF ou Excel) na pasta /dados, você DEVE OBRIGATORIAMENTE incluir o link de download na sua resposta final ao usuário. Exemplo real de link de download: [Relatorio_Estatistico_Premium.pdf](/api/skills/estatistico-particular/media?path=dados/Relatorio_Estatistico_Premium.pdf). ATENÇÃO CRÍTICA: NUNCA escreva a palavra literal 'NOME_DO_ARQUIVO' ou 'CAMINHO_DO_ARQUIVO' nos colchetes ou na URL do link! NUNCA exiba explicações metatextuais sobre seu fluxo de trabalho, playbook ou regras internas na resposta final. Responda apenas com a confirmação e o link de download formatado.`;
 
     // Constrói contents com suporte a arquivo multimodal se enviado
     const chatContents = messages.map((m, index) => {
@@ -2219,14 +2219,25 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
         success: toolSuccess
       });
 
+      let extractedLinkText = '';
+      try {
+        const parsedToolOutput = JSON.parse(toolStdout.trim());
+        const rawPath = parsedToolOutput.caminho_saida || parsedToolOutput.download_url || '';
+        if (rawPath) {
+          const cleanLinkPath = rawPath.replace(/^\/+/, '').replace(/^api\/skills\/[^\/]+\/media\?path=/, '');
+          const filename = path.basename(cleanLinkPath);
+          extractedLinkText = `\n- LINK DE DOWNLOAD PRONTO PARA COPIAR NA RESPOSTA FINAL:\n[${filename}](/api/skills/${skillToUse}/media?path=${cleanLinkPath})\nATENÇÃO: Cole EXATAMENTE a linha de link acima na sua resposta ao usuário! NUNCA use 'NOME_DO_ARQUIVO' nem explique regras internas/playbook.`;
+        }
+      } catch (e) { /* ignora */ }
+
       const systemFeedbackMsg = `System Notification: O script '${toolName}' foi executado localmente.
 Resultado de saída (stdout):
 ${toolStdout}
 ${toolStderr ? '\nLogs de Erros (stderr):\n' + toolStderr : ''}
 
 INSTRUÇÕES PÓS-EXECUÇÃO:
-- Se o script gerou ou modificou um arquivo de dados com sucesso (ex: "sucesso": true), inclua o link de download no formato: [NOME_DO_ARQUIVO](/api/skills/${skillToUse}/media?path=CAMINHO_DO_ARQUIVO). NUNCA crie links para os scripts de código em /tools (como stats_toolkit.py). Não coloque a palavra 'Baixar' dentro dos colchetes do link.
-- Apresente os resultados finais formatados (tabela markdown, parecer clínico, recomendações) conforme as orientações do playbook.
+- Se o script gerou ou modificou um arquivo de dados com sucesso (ex: "sucesso": true), inclua o link de download na sua resposta final.${extractedLinkText}
+- Apresente os resultados finais formatados (tabela markdown, parecer clínico, recomendações) conforme as orientações do playbook. NUNCA exiba raciocínio interno ou metatexto explicativo fora das tags de thought.
 - Se precisar rodar outro script, responda EXCLUSIVAMENTE com o JSON { "callTool": ... }, sem texto adicional.
 - Lembre-se: sua resposta ao usuário deve ser em texto plano com markdown. NÃO use JSON na resposta final.`;
 

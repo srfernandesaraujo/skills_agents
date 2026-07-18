@@ -1118,6 +1118,25 @@ export async function downloadBinaryFile(name, filePath) {
     }
   }
 
+  // Fallback inteligente: se o caminho solicitado for um placeholder (ex: NOME_DO_ARQUIVO) ou não for encontrado
+  const dadosDirs = [
+    path.join(process.cwd(), '.sandboxes', name, 'dados'),
+    safePath(path.join(SKILLS_DIR, name), 'dados')
+  ];
+  for (const dDir of dadosDirs) {
+    if (fs.existsSync(dDir)) {
+      const files = fs.readdirSync(dDir);
+      const targetFile = files.find(f => f.endsWith('.pdf')) || files.find(f => f.endsWith('.xlsx') || f.endsWith('.csv'));
+      if (targetFile) {
+        const fullP = path.join(dDir, targetFile);
+        if (fs.existsSync(fullP)) {
+          console.log(`📥 [MEDIA FALLBACK] Servindo arquivo inteligente para download: ${fullP}`);
+          return fs.readFileSync(fullP);
+        }
+      }
+    }
+  }
+
   return null;
 }
 
