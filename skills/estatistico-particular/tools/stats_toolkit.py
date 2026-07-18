@@ -34,8 +34,9 @@ from scipy import stats
 # Utilitários gerais
 # --------------------------------------------------------------------------- #
 
-def carregar_dados(path, sheet=None):
-    if not os.path.exists(path):
+def carregar_dados_com_caminho(path, sheet=None):
+    real_path = path
+    if not os.path.exists(real_path):
         filename = os.path.basename(path)
         candidatos = [
             os.path.join("dados", filename),
@@ -44,21 +45,76 @@ def carregar_dados(path, sheet=None):
         ]
         for c in candidatos:
             if os.path.exists(c):
-                path = c
+                real_path = c
                 break
 
-    if path.lower().endswith((".xlsx", ".xls")):
-        return pd.read_excel(path, sheet_name=sheet if sheet else 0)
-    elif path.lower().endswith(".csv"):
-        # tenta detectar separador automaticamente (vírgula ou ponto-e-vírgula, comum em BR)
+    if real_path.lower().endswith((".xlsx", ".xls")):
+        df = pd.read_excel(real_path, sheet_name=sheet if sheet else 0)
+    elif real_path.lower().endswith(".csv"):
         try:
-            return pd.read_csv(path, sep=None, engine="python")
+            df = pd.read_csv(real_path, sep=None, engine="python")
         except Exception:
-            return pd.read_csv(path)
-    elif path.lower().endswith(".tsv"):
-        return pd.read_csv(path, sep="\t")
+            df = pd.read_csv(real_path)
+    elif real_path.lower().endswith(".tsv"):
+        df = pd.read_csv(real_path, sep="\t")
     else:
         raise ValueError(f"Extensão de arquivo não suportada: {path}")
+
+    return df, real_path
+
+
+def salvar_dados(df, path):
+    if path.lower().endswith((".xlsx", ".xls")):
+        df.to_excel(path, index=False)
+    elif path.lower().endswith(".csv"):
+        df.to_csv(path, index=False)
+    elif path.lower().endswith(".tsv"):
+        df.to_csv(path, sep="\t", index=False)
+
+
+def carregar_dados(path, sheet=None, args=None):
+    df, real_path = carregar_dados_com_caminho(path, sheet)
+    if args:
+        df, alterado = resolver_e_criar_colunas(df, args)
+        if alterado:
+            try:
+                salvar_dados(df, real_path)
+            except Exception:
+                pass
+    return df
+
+
+def resolver_e_criar_colunas(df, args):
+    alterado = False
+    var1 = getattr(args, 'var1', None) or getattr(args, 'col1', None) or getattr(args, 'coluna1', None)
+    var2 = getattr(args, 'var2', None) or getattr(args, 'col2', None) or getattr(args, 'coluna2', None)
+    nova_col = getattr(args, 'nova_coluna', None) or getattr(args, 'out', None) or getattr(args, 'var', None)
+
+    if var1 and var2:
+        col1_real = next((c for c in df.columns if c.strip().lower() == str(var1).strip().lower()), None)
+        col2_real = next((c for c in df.columns if c.strip().lower() == str(var2).strip().lower()), None)
+        if col1_real and col2_real:
+            target_name = nova_col or f"Delta_{col1_real}_{col2_real}"
+            if target_name not in df.columns:
+                val1 = pd.to_numeric(df[col1_real], errors='coerce')
+                val2 = pd.to_numeric(df[col2_real], errors='coerce')
+                df[target_name] = val1 - val2
+                alterado = True
+                if hasattr(args, 'var') and getattr(args, 'var') is None:
+                    setattr(args, 'var', target_name)
+
+    var_alvo = getattr(args, 'var', None) or getattr(args, 'y', None)
+    if var_alvo and isinstance(var_alvo, str) and var_alvo not in df.columns:
+        cols_lower = {c.lower(): c for c in df.columns}
+        col_pos = next((cols_lower[c] for c in cols_lower if any(w in c for w in ['6meses', 'final', 'pos', 'pós', 'depois', '12meses', '3meses', 'fim'])), None)
+        col_pre = next((cols_lower[c] for c in cols_lower if any(w in c for w in ['basal', 'inicial', 'pre', 'pré', 'antes', 'zero', '0'])), None)
+        if col_pos and col_pre:
+            val_pos = pd.to_numeric(df[col_pos], errors='coerce')
+            val_pre = pd.to_numeric(df[col_pre], errors='coerce')
+            df[var_alvo] = val_pos - val_pre
+            alterado = True
+
+    return df, alterado
 
 
 def limpar_numerico(serie):
@@ -143,6 +199,62 @@ def cramer_v(chi2, n, r, c):
 def rank_biserial_mannwhitney(u, n1, n2):
     """Correlação rank-biserial (effect size para Mann-Whitney), r = 1 - 2U/(n1*n2)."""
     return 1 - (2 * u) / (n1 * n2)
+
+
+# --------------------------------------------------------------------------- #
+# Comando: calcular_diferenca
+# --------------------------------------------------------------------------- #
+
+def cmd_calcular_diferenca(args):
+    df, real_path = carregar_dados_com_caminho(args.input, args.sheet)
+
+    var1 = getattr(args, 'var1', None) or getattr(args, 'col1', None) or getattr(args, 'coluna1', None)
+    var2 = getattr(args, 'var2', None) or getattr(args, 'col2', None) or getattr(args, 'coluna2', None)
+    nova_coluna = getattr(args, 'nova_coluna', None) or getattr(args, 'out', None) or getattr(args, 'var', None) or 'Variacao_PAS'
+    operacao = str(getattr(args, 'operacao', 'subtracao')).lower()
+
+    if not var1 or not var2:
+        cols_lower = {c.lower(): c for c in df.columns}
+        col1_real = next((cols_lower[c] for c in cols_lower if any(w in c for w in ['6meses', 'final', 'pos', 'pós', 'depois', '12meses', '3meses', 'fim'])), None)
+        col2_real = next((cols_lower[c] for c in cols_lower if any(w in c for w in ['basal', 'inicial', 'pre', 'pré', 'antes', 'zero', '0'])), None)
+    else:
+        col1_real = next((c for c in df.columns if c.strip().lower() == str(var1).strip().lower()), None)
+        col2_real = next((c for c in df.columns if c.strip().lower() == str(var2).strip().lower()), None)
+
+    if not col1_real or not col2_real:
+        erro(f"Não foi possível identificar as duas colunas para o cálculo da diferença. Colunas disponíveis na planilha: {list(df.columns)}")
+
+    val1 = pd.to_numeric(df[col1_real], errors='coerce')
+    val2 = pd.to_numeric(df[col2_real], errors='coerce')
+
+    if 'soma' in operacao or operacao == '+':
+        res = val1 + val2
+    elif 'divis' in operacao or operacao == '/':
+        res = val1 / val2
+    elif 'mult' in operacao or operacao == '*':
+        res = val1 * val2
+    else:
+        res = val1 - val2
+
+    df[nova_coluna] = res
+    salvar_dados(df, real_path)
+
+    arr, n_total, n_validos = limpar_numerico(res)
+    ret = {
+        "sucesso": True,
+        "mensagem": f"Coluna '{nova_coluna}' calculada com sucesso ({col1_real} - {col2_real}) e salva em '{os.path.basename(real_path)}'.",
+        "nova_coluna": nova_coluna,
+        "n_total": n_total,
+        "n_validos": n_validos,
+        "resumo": {
+            "media": float(np.mean(arr)) if len(arr) > 0 else None,
+            "desvio_padrao": float(np.std(arr, ddof=1)) if len(arr) > 1 else None,
+            "mediana": float(np.median(arr)) if len(arr) > 0 else None,
+            "minimo": float(np.min(arr)) if len(arr) > 0 else None,
+            "maximo": float(np.max(arr)) if len(arr) > 0 else None,
+        }
+    }
+    saida(ret)
 
 
 # --------------------------------------------------------------------------- #
@@ -1145,6 +1257,14 @@ def main():
     def add_input_args(p):
         p.add_argument("--input", required=True, help="Caminho do arquivo .csv/.xlsx/.tsv")
         p.add_argument("--sheet", default=None, help="Nome da planilha (apenas .xlsx)")
+        p.add_argument("--var1", default=None)
+        p.add_argument("--var2", default=None)
+        p.add_argument("--nova_coluna", default=None)
+
+    p = sub.add_parser("calcular_diferenca")
+    add_input_args(p)
+    p.add_argument("--operacao", default="subtracao")
+    p.set_defaults(func=cmd_calcular_diferenca)
 
     p = sub.add_parser("explorar")
     add_input_args(p)
@@ -1281,7 +1401,19 @@ def main():
             elif isinstance(json_args, dict):
                 # Se for um objeto dicionário
                 comando = json_args.get('comando') or json_args.get('command') or json_args.get('action')
-                if not comando:
+                CMD_MAP = {
+                    'criar_coluna': 'calcular_diferenca',
+                    'calcular_delta': 'calcular_diferenca',
+                    'transformar': 'calcular_diferenca',
+                    'diff': 'calcular_diferenca',
+                    'diferenca': 'calcular_diferenca',
+                    'diferença': 'calcular_diferenca',
+                    'subtracao': 'calcular_diferenca',
+                    'subtrair': 'calcular_diferenca'
+                }
+                if comando:
+                    comando = CMD_MAP.get(str(comando).lower(), str(comando))
+                else:
                     comando = 'explorar'
                 new_argv.append(str(comando))
                 

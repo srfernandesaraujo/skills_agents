@@ -121,6 +121,7 @@ completa de comandos disponíveis em `scripts/stats_toolkit.py`:
 | Comando | Uso |
 |---|---|
 | `explorar` | Inventário de colunas/tipos/N |
+| `calcular_diferenca` | Cria coluna calculada (ex: Pressao_6meses - Pressao_Basal = Variacao_PAS) e salva na planilha |
 | `descritivas` | Média, DP, mediana, IC95%, etc. (com ou sem grupo) |
 | `normalidade` | Shapiro-Wilk / KS, por grupo |
 | `homogeneidade_variancia` | Levene |
