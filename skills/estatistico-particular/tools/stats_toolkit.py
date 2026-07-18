@@ -210,8 +210,9 @@ def cmd_calcular_diferenca(args):
 
     var1 = getattr(args, 'var1', None) or getattr(args, 'col1', None) or getattr(args, 'coluna1', None)
     var2 = getattr(args, 'var2', None) or getattr(args, 'col2', None) or getattr(args, 'coluna2', None)
-    nova_coluna = getattr(args, 'nova_coluna', None) or getattr(args, 'out', None) or getattr(args, 'var', None) or 'Variacao_PAS'
+    nova_coluna = getattr(args, 'nova_coluna', None) or getattr(args, 'col_nova', None) or getattr(args, 'coluna_nova', None) or getattr(args, 'var', None) or 'Variacao_PAS'
     operacao = str(getattr(args, 'operacao', 'subtracao')).lower()
+    out_file = getattr(args, 'out', None) or getattr(args, 'output', None)
 
     if not var1 or not var2:
         cols_lower = {c.lower(): c for c in df.columns}
@@ -238,6 +239,12 @@ def cmd_calcular_diferenca(args):
 
     df[nova_coluna] = res
     salvar_dados(df, real_path)
+
+    if out_file:
+        try:
+            salvar_dados(df, out_file)
+        except Exception:
+            pass
 
     arr, n_total, n_validos = limpar_numerico(res)
     ret = {
@@ -1392,7 +1399,18 @@ def main():
                 'variavel': 'var',
                 'variável': 'var',
                 'coluna': 'var',
-                'column': 'var'
+                'column': 'var',
+                'col_nova': 'nova_coluna',
+                'coluna_nova': 'nova_coluna',
+                'colunanova': 'nova_coluna',
+                'nome_coluna': 'nova_coluna',
+                'nome_da_coluna': 'nova_coluna',
+                'output': 'out',
+                'out': 'out',
+                'saida': 'out',
+                'saída': 'out',
+                'output_file': 'out',
+                'outfile': 'out'
             }
 
             if isinstance(json_args, list):
@@ -1438,7 +1456,7 @@ def main():
         except Exception as e:
             erro(f"Erro ao processar arquivo JSON de argumentos: {e}")
 
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
     try:
         args.func(args)
     except Exception as ex:

@@ -2021,28 +2021,32 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
 
     const rawReply = chatData.candidates?.[0]?.content?.parts?.[0]?.text || '';
     
-    // Extrai o processo de raciocínio das tags <thought_process>
-    let thoughtProcess = '';
-    const thoughtRegex = /<thought_process>([\s\S]*?)<\/thought_process>/i;
-    const thoughtMatch = rawReply.match(thoughtRegex);
-    if (thoughtMatch) {
-      thoughtProcess = thoughtMatch[1].trim();
-      trace.thoughtProcess = thoughtProcess;
-    }
-    let cleanedReply = rawReply.replace(thoughtRegex, '').trim();
-
-    // Fallback: Se o modelo não usou as tags XML mas iniciou o texto plano com "thought_process"
-    if (!thoughtMatch && (rawReply.trim().toLowerCase().startsWith('thought_process') || rawReply.trim().toLowerCase().startsWith('thoughtprocess'))) {
-      const jsonStart = rawReply.indexOf('{');
-      if (jsonStart !== -1) {
-        thoughtProcess = rawReply.substring(0, jsonStart).replace(/^(?:thought_process|thoughtprocess)\s*:?\s*/i, '').trim();
-        cleanedReply = rawReply.substring(jsonStart).trim();
-      } else {
-        thoughtProcess = rawReply.replace(/^(?:thought_process|thoughtprocess)\s*:?\s*/i, '').trim();
-        cleanedReply = '';
+    const extractThoughtAndClean = (replyText) => {
+      let thought = '';
+      const thoughtRegex = /<thought_process>([\s\S]*?)<\/thought_process>/i;
+      const thoughtMatch = replyText.match(thoughtRegex);
+      if (thoughtMatch) {
+        thought = thoughtMatch[1].trim();
       }
-      trace.thoughtProcess = thoughtProcess;
-    }
+      let cleaned = replyText.replace(thoughtRegex, '').trim();
+
+      if (!thoughtMatch && (replyText.trim().toLowerCase().startsWith('thought_process') || replyText.trim().toLowerCase().startsWith('thoughtprocess'))) {
+        const jsonStart = replyText.indexOf('{');
+        if (jsonStart !== -1) {
+          thought = replyText.substring(0, jsonStart).replace(/^(?:thought_process|thoughtprocess)\s*:?\s*/i, '').trim();
+          cleaned = replyText.substring(jsonStart).trim();
+        } else {
+          thought = replyText.replace(/^(?:thought_process|thoughtprocess)\s*:?\s*/i, '').trim();
+          cleaned = '';
+        }
+      }
+      return { thought, cleaned };
+    };
+
+    const initialParsed = extractThoughtAndClean(rawReply);
+    let thoughtProcess = initialParsed.thought;
+    if (thoughtProcess) trace.thoughtProcess = thoughtProcess;
+    let cleanedReply = initialParsed.cleaned;
 
     // Tenta fazer o parsing para ver se a IA solicitou execução de ferramenta (callTool)
     let parsedResult = parseToolCall(cleanedReply);
@@ -2208,13 +2212,11 @@ INSTRUÇÕES PÓS-EXECUÇÃO:
 
       const rawReply = chatData.candidates?.[0]?.content?.parts?.[0]?.text || '';
       
-      let thoughtProcess = '';
-      const thoughtMatch = rawReply.match(thoughtRegex);
-      if (thoughtMatch) {
-        thoughtProcess = thoughtMatch[1].trim();
-        trace.thoughtProcess = (trace.thoughtProcess ? trace.thoughtProcess + '\n' : '') + thoughtProcess;
+      const loopParsed = extractThoughtAndClean(rawReply);
+      if (loopParsed.thought) {
+        trace.thoughtProcess = (trace.thoughtProcess ? trace.thoughtProcess + '\n' : '') + loopParsed.thought;
       }
-      currentCleanedReply = rawReply.replace(thoughtRegex, '').trim();
+      currentCleanedReply = loopParsed.cleaned;
 
       // Tenta parsear a nova resposta para verificar se o agente quer chamar outra ferramenta
       currentParsedResult = parseToolCall(currentCleanedReply);
