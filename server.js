@@ -1965,7 +1965,7 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
 4. Se você NÃO precisar chamar ferramentas no momento (apenas conversar, fazer perguntas, interagir como a persona ou avaliar o estudante), responda APENAS com texto plano direto. NÃO use JSON, NÃO use tags, NÃO coloque a resposta dentro de um campo "reply". Apenas digite sua fala/mensagem de texto diretamente.
 5. NÃO faça anúncios sobre sua própria conduta conversacional (evite frases explicativas como "Assumo o papel de farmacêutico", "Passando para o papel de paciente" ou "Iniciando modo demonstração"). Fale e aja DIRETAMENTE no personagem/persona de forma natural, realista e imersiva.
 6. TODA E QUALQUER SAÍDA destinada ao usuário (feedbacks de critérios, relatórios de notas e conversação) DEVE SER em Português do Brasil (pt-BR).
-7. Geração de Links de Download (OBRIGATÓRIO): Quando um script de automação gerar um arquivo de saída (como planilhas Excel, PDFs, etc.) com sucesso, você DEVE OBRIGATORIAMENTE incluir um link de download na sua resposta ao usuário. Use EXATAMENTE este formato markdown: [Baixar NOME_DO_ARQUIVO](/api/skills/NOME_DA_SKILL/media?path=CAMINHO_DO_ARQUIVO). Exemplo concreto: [Baixar notas_finais.xlsx](/api/skills/corretor-de-provas-interativo/media?path=dados/notas_finais.xlsx). O link DEVE começar com a barra "/". Se o script retornou sucesso e indicou um caminho de arquivo, você NUNCA deve omitir o link de download.`;
+7. Geração de Links de Download (OBRIGATÓRIO): Quando um script de automação gerar um arquivo de saída (como planilhas Excel, PDFs, etc.) com sucesso, você DEVE OBRIGATORIAMENTE incluir um link de download na sua resposta ao usuário. Use EXATAMENTE este formato markdown: [NOME_DO_ARQUIVO](/api/skills/NOME_DA_SKILL/media?path=CAMINHO_DO_ARQUIVO). Exemplo concreto: [notas_finais.xlsx](/api/skills/corretor-de-provas-interativo/media?path=dados/notas_finais.xlsx). Não adicione a palavra 'Baixar' dentro dos colchetes do link. O link DEVE começar com a barra "/". Se o script retornou sucesso e indicou um caminho de arquivo, você NUNCA deve omitir o link de download.`;
 
     // Constrói contents com suporte a arquivo multimodal se enviado
     const chatContents = messages.map((m, index) => {
@@ -2181,7 +2181,7 @@ ${toolStdout}
 ${toolStderr ? '\nLogs de Erros (stderr):\n' + toolStderr : ''}
 
 INSTRUÇÕES PÓS-EXECUÇÃO:
-- Se o script gerou um arquivo com sucesso (ex: "sucesso": true), você DEVE incluir um link de download na sua resposta usando o formato: [Baixar NOME_DO_ARQUIVO](/api/skills/${skillToUse}/media?path=CAMINHO_DO_ARQUIVO). Use o caminho do arquivo informado na saída do script (campo "caminho_saida" ou "download_url").
+- Se o script gerou um arquivo com sucesso (ex: "sucesso": true), você DEVE incluir um link de download na sua resposta usando o formato: [NOME_DO_ARQUIVO](/api/skills/${skillToUse}/media?path=CAMINHO_DO_ARQUIVO). Não coloque a palavra 'Baixar' dentro dos colchetes do link. Use o caminho do arquivo informado na saída do script (campo "caminho_saida" ou "download_url").
 - Apresente os resultados finais formatados (tabela markdown, parecer clínico, recomendações) conforme as orientações do playbook.
 - Se precisar rodar outro script, responda EXCLUSIVAMENTE com o JSON { "callTool": ... }, sem texto adicional.
 - Lembre-se: sua resposta ao usuário deve ser em texto plano com markdown. NÃO use JSON na resposta final.`;
@@ -2248,6 +2248,15 @@ INSTRUÇÕES PÓS-EXECUÇÃO:
         if (!matched) {
           finalReply = currentCleanedReply;
         }
+      }
+    }
+
+    if (!finalReply || !finalReply.trim()) {
+      if (trace.thoughtProcess) {
+        finalReply = trace.thoughtProcess.replace(/<thought_process>|<\/thought_process>/gi, '').trim();
+      }
+      if (!finalReply || !finalReply.trim()) {
+        finalReply = 'Execução finalizada com sucesso. Como posso ajudar com a próxima etapa da análise?';
       }
     }
 

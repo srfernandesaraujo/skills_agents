@@ -1050,10 +1050,45 @@ export async function saveSystemAutomationLogs(jobs) {
 }
 
 export async function downloadBinaryFile(name, filePath) {
+  const cleanPath = (filePath || '').replace(/^\/+/, '');
   if (useFirebase && bucket) {
-    const file = bucket.file(`skills/${name}/${filePath}`);
-    const [buffer] = await file.download();
-    return buffer;
+    let storagePath = cleanPath.startsWith('skills/') ? cleanPath : `skills/${name}/${cleanPath}`;
+    let file = bucket.file(storagePath);
+    let [exists] = await file.exists();
+    if (exists) {
+      const [buffer] = await file.download();
+      return buffer;
+    }
+    if (!cleanPath.startsWith('dados/')) {
+      storagePath = `skills/${name}/dados/${cleanPath}`;
+      file = bucket.file(storagePath);
+      [exists] = await file.exists();
+      if (exists) {
+        const [buffer] = await file.download();
+        return buffer;
+      }
+    }
+    if (cleanPath.startsWith('dados/')) {
+      const subPath = cleanPath.replace(/^dados\//, '');
+      storagePath = `skills/${name}/${subPath}`;
+      file = bucket.file(storagePath);
+      [exists] = await file.exists();
+      if (exists) {
+        const [buffer] = await file.download();
+        return buffer;
+      }
+    }
+  } else {
+    const candidates = [
+      safePath(path.join(SKILLS_DIR, name), cleanPath),
+      path.join(process.cwd(), '.sandboxes', name, cleanPath),
+      path.join(process.cwd(), '.sandboxes', name, 'dados', path.basename(cleanPath))
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) {
+        return fs.readFileSync(c);
+      }
+    }
   }
   return null;
 }
