@@ -565,6 +565,18 @@ export async function getFileContent(name, filePath) {
   }
 }
 
+export async function getBinaryFileBuffer(name, filePath) {
+  if (useFirebase && bucket) {
+    const storagePath = `skills/${name}/${filePath}`;
+    const file = bucket.file(storagePath);
+    const [buffer] = await file.download();
+    return buffer;
+  } else {
+    const fullPath = safePath(path.join(SKILLS_DIR, name), filePath);
+    return fs.readFileSync(fullPath);
+  }
+}
+
 export async function saveFile(name, filePath, content, isBinary = false, mimeType = 'text/plain') {
   if (useFirebase && db) {
     const docId = getDocIdFromPath(filePath);

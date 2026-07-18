@@ -69,15 +69,11 @@ pergunta — confirme o que entendeu e pergunte só o que falta.
 ### Etapa 2 — Pedir a planilha
 
 Peça a planilha (.xlsx ou .csv) com os dados brutos, uma linha por
-observação/paciente/participante. Se o usuário já anexou, use o arquivo em
-`/mnt/user-data/uploads/` diretamente — não peça de novo.
+observação/paciente/participante. Se o usuário já anexou a planilha, utilize o arquivo salvo na pasta `dados/` diretamente — não peça de novo.
 
 ### Etapa 3 — Explorar os dados (sempre antes de propor testes)
 
-Rode:
-```bash
-python3 scripts/stats_toolkit.py explorar --input <arquivo>
-```
+Execute a ferramenta `stats_toolkit.py` com o comando `explorar` e o nome da planilha.
 Isso retorna estrutura, tipos prováveis (numérica/categórica), N válidos e
 ausentes por coluna. Use isso para:
 - Confirmar com o usuário quais colunas correspondem ao desfecho, ao(s)

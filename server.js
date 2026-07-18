@@ -1453,14 +1453,13 @@ async function downloadSkillFilesToSandbox(skillName, sandboxDir) {
             fs.mkdirSync(localDestDir, { recursive: true });
           }
           
-          if (fileContent.isBinary && fileContent.url) {
-            const response = await fetch(fileContent.url);
-            if (response.ok) {
-              const arrayBuffer = await response.arrayBuffer();
-              fs.writeFileSync(localDestPath, Buffer.from(arrayBuffer));
-              console.log(`📥 [SANDBOX] Baixado binário com sucesso: ${filePath}`);
-            } else {
-              throw new Error(`Falha ao baixar do Storage: ${response.statusText}`);
+          if (fileContent.isBinary) {
+            try {
+              const buffer = await storage.getBinaryFileBuffer(skillName, filePath);
+              fs.writeFileSync(localDestPath, buffer);
+              console.log(`📥 [SANDBOX] Baixado binário com sucesso via Admin SDK: ${filePath}`);
+            } catch (binErr) {
+              console.error(`Erro ao baixar arquivo binário ${filePath} para sandbox:`, binErr);
             }
           } else {
             fs.writeFileSync(localDestPath, fileContent.content || '', 'utf8');
@@ -1951,8 +1950,9 @@ Scripts de automação disponíveis na pasta /tools: ${JSON.stringify(toolsScrip
 
 Instruções de Resposta:
 1. Raciocínio Oculto (Chain of Thought): Você DEVE sempre iniciar sua resposta abrindo a tag <thought_process> e descrever nela todo o seu raciocínio, análises e tomadas de decisão (que também devem ser preferencialmente conduzidos em Português). Após concluir seu raciocínio, feche obrigatoriamente a tag com </thought_process> e então depois forneça a resposta ou pergunta ao usuário. Nunca misture o raciocínio com a resposta externa e nunca escreva a palavra "thought_process" solta fora das tags XML.
-2. Você deve analisar a conversa e guiar o usuário de acordo com o "Roteiro de Perguntas" do Playbook. Não entregue a resposta final até ter coletado todos os dados do roteiro.
-3. CHAMADA DE FERRAMENTA (CRÍTICO): Se você precisar rodar um dos scripts de automação (da lista de scripts acima) para obter dados ou realizar cálculos, sua resposta INTEIRA (após o </thought_process>) DEVE ser EXCLUSIVAMENTE o JSON abaixo, sem NENHUM texto antes, depois ou ao redor dele:
+2. REGRA DE SILÊNCIO TÉCNICO (CRÍTICO): NUNCA exiba explicações sobre o fluxo de trabalho (Playbook), etapas internas, regras ou nomes de scripts/comandos fora das tags <thought_process>. O usuário NUNCA deve ver metatexto como "Meu fluxo de trabalho indica...", "A Etapa 2 é...", "O comando para explorar os dados é...". Forneça APENAS a fala/pergunta direta ao usuário ou a chamada exclusiva da ferramenta em JSON.
+3. Você deve analisar a conversa e guiar o usuário de acordo com o "Roteiro de Perguntas" do Playbook. Não entregue a resposta final até ter coletado todos os dados do roteiro.
+4. CHAMADA DE FERRAMENTA (CRÍTICO): Se você precisar rodar um dos scripts de automação (da lista de scripts acima) para obter dados ou realizar cálculos, sua resposta INTEIRA (após o </thought_process>) DEVE ser EXCLUSIVAMENTE o JSON abaixo, sem NENHUM texto antes, depois ou ao redor dele:
 {
   "callTool": "nome_do_script.py",
   "args": {
