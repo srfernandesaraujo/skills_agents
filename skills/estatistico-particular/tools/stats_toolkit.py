@@ -1254,6 +1254,27 @@ def main():
             
             new_argv = [sys.argv[0]]
             
+            PARAM_MAP = {
+                'arquivo': 'input',
+                'file': 'input',
+                'path': 'input',
+                'filepath': 'input',
+                'filename': 'input',
+                'planilha': 'sheet',
+                'sheet_name': 'sheet',
+                'sheetname': 'sheet',
+                'grupo': 'group',
+                'grupos': 'group',
+                'variaveis': 'vars',
+                'variáveis': 'vars',
+                'colunas': 'vars',
+                'columns': 'vars',
+                'variavel': 'var',
+                'variável': 'var',
+                'coluna': 'var',
+                'column': 'var'
+            }
+
             if isinstance(json_args, list):
                 # Se for uma lista direta de argumentos, ex: ["explorar", "--input", "dados.csv"]
                 new_argv.extend([str(item) for item in json_args])
@@ -1267,7 +1288,10 @@ def main():
                     if k in ('comando', 'command', 'action', 'skill_name'):
                         continue
                     
-                    flag = k if k.startswith('-') else f"--{k}"
+                    clean_k = k.lstrip('-').lower()
+                    real_k = PARAM_MAP.get(clean_k, clean_k)
+                    flag = f"--{real_k}"
+
                     if isinstance(v, bool):
                         if v:
                             new_argv.append(flag)
