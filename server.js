@@ -1966,7 +1966,7 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
 4. Se você NÃO precisar chamar ferramentas no momento (apenas conversar, fazer perguntas, interagir como a persona ou avaliar o estudante), responda APENAS com texto plano direto. NÃO use JSON, NÃO use tags, NÃO coloque a resposta dentro de um campo "reply". Apenas digite sua fala/mensagem de texto diretamente.
 5. NÃO faça anúncios sobre sua própria conduta conversacional (evite frases explicativas como "Assumo o papel de farmacêutico", "Passando para o papel de paciente" ou "Iniciando modo demonstração"). Fale e aja DIRETAMENTE no personagem/persona de forma natural, realista e imersiva.
 6. TODA E QUALQUER SAÍDA destinada ao usuário (feedbacks de critérios, relatórios de notas e conversação) DEVE SER em Português do Brasil (pt-BR).
-7. Geração de Links de Download (OBRIGATÓRIO): Quando um script de automação gerar um arquivo de saída (como planilhas Excel, PDFs, etc.) com sucesso, você DEVE OBRIGATORIAMENTE incluir um link de download na sua resposta ao usuário. Use EXATAMENTE este formato markdown: [NOME_DO_ARQUIVO](/api/skills/NOME_DA_SKILL/media?path=CAMINHO_DO_ARQUIVO). Exemplo concreto: [notas_finais.xlsx](/api/skills/corretor-de-provas-interativo/media?path=dados/notas_finais.xlsx). Não adicione a palavra 'Baixar' dentro dos colchetes do link. O link DEVE começar com a barra "/". Se o script retornou sucesso e indicou um caminho de arquivo, você NUNCA deve omitir o link de download.`;
+7. Geração de Links de Download (OBRIGATÓRIO): Quando um script de automação gerar ou modificar um arquivo de dados/saída (como planilhas Excel .xlsx, .csv, PDFs, etc.) com sucesso na pasta /dados, você DEVE OBRIGATORIAMENTE incluir um link de download na sua resposta. Use EXATAMENTE este formato markdown: [NOME_DO_ARQUIVO](/api/skills/NOME_DA_SKILL/media?path=CAMINHO_DO_ARQUIVO). NUNCA crie links de download para os scripts de código em /tools (como stats_toolkit.py), apenas cite o nome do script em texto simples. Não adicione a palavra 'Baixar' dentro dos colchetes do link.`;
 
     // Constrói contents com suporte a arquivo multimodal se enviado
     const chatContents = messages.map((m, index) => {
@@ -2225,7 +2225,7 @@ ${toolStdout}
 ${toolStderr ? '\nLogs de Erros (stderr):\n' + toolStderr : ''}
 
 INSTRUÇÕES PÓS-EXECUÇÃO:
-- Se o script gerou um arquivo com sucesso (ex: "sucesso": true), você DEVE incluir um link de download na sua resposta usando o formato: [NOME_DO_ARQUIVO](/api/skills/${skillToUse}/media?path=CAMINHO_DO_ARQUIVO). Não coloque a palavra 'Baixar' dentro dos colchetes do link. Use o caminho do arquivo informado na saída do script (campo "caminho_saida" ou "download_url").
+- Se o script gerou ou modificou um arquivo de dados com sucesso (ex: "sucesso": true), inclua o link de download no formato: [NOME_DO_ARQUIVO](/api/skills/${skillToUse}/media?path=CAMINHO_DO_ARQUIVO). NUNCA crie links para os scripts de código em /tools (como stats_toolkit.py). Não coloque a palavra 'Baixar' dentro dos colchetes do link.
 - Apresente os resultados finais formatados (tabela markdown, parecer clínico, recomendações) conforme as orientações do playbook.
 - Se precisar rodar outro script, responda EXCLUSIVAMENTE com o JSON { "callTool": ... }, sem texto adicional.
 - Lembre-se: sua resposta ao usuário deve ser em texto plano com markdown. NÃO use JSON na resposta final.`;

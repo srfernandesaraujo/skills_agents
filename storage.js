@@ -1096,18 +1096,28 @@ export async function downloadBinaryFile(name, filePath) {
         return buffer;
       }
     }
-  } else {
-    const candidates = [
-      safePath(path.join(SKILLS_DIR, name), cleanPath),
-      path.join(process.cwd(), '.sandboxes', name, cleanPath),
-      path.join(process.cwd(), '.sandboxes', name, 'dados', path.basename(cleanPath))
-    ];
-    for (const c of candidates) {
-      if (fs.existsSync(c)) {
-        return fs.readFileSync(c);
-      }
+
+    if (useFirebase && db) {
+      try {
+        const fileDoc = await getFileContent(name, cleanPath);
+        if (fileDoc && fileDoc.content) {
+          return Buffer.from(fileDoc.content, 'utf8');
+        }
+      } catch (e) { /* ignora */ }
     }
   }
+
+  const candidates = [
+    safePath(path.join(SKILLS_DIR, name), cleanPath),
+    path.join(process.cwd(), '.sandboxes', name, cleanPath),
+    path.join(process.cwd(), '.sandboxes', name, 'dados', path.basename(cleanPath))
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) {
+      return fs.readFileSync(c);
+    }
+  }
+
   return null;
 }
 
