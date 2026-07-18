@@ -1257,12 +1257,12 @@ def main():
     def add_input_args(p):
         p.add_argument("--input", required=True, help="Caminho do arquivo .csv/.xlsx/.tsv")
         p.add_argument("--sheet", default=None, help="Nome da planilha (apenas .xlsx)")
-        p.add_argument("--var1", default=None)
-        p.add_argument("--var2", default=None)
-        p.add_argument("--nova_coluna", default=None)
 
     p = sub.add_parser("calcular_diferenca")
     add_input_args(p)
+    p.add_argument("--var1", default=None)
+    p.add_argument("--var2", default=None)
+    p.add_argument("--nova_coluna", default=None)
     p.add_argument("--operacao", default="subtracao")
     p.set_defaults(func=cmd_calcular_diferenca)
 

@@ -2032,14 +2032,16 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
     let cleanedReply = rawReply.replace(thoughtRegex, '').trim();
 
     // Fallback: Se o modelo não usou as tags XML mas iniciou o texto plano com "thought_process"
-    if (!thoughtMatch && (rawReply.toLowerCase().startsWith('thought_process') || rawReply.toLowerCase().startsWith('thoughtprocess'))) {
-      const thoughtPrefixRegex = /^(?:thought_process|thoughtprocess)\s*:?\s*([\s\S]*?)(?=\n\n|\n[A-Z]|$)/i;
-      const prefixMatch = rawReply.match(thoughtPrefixRegex);
-      if (prefixMatch) {
-        thoughtProcess = prefixMatch[0].trim();
-        trace.thoughtProcess = prefixMatch[1].trim();
-        cleanedReply = rawReply.replace(thoughtPrefixRegex, '').trim();
+    if (!thoughtMatch && (rawReply.trim().toLowerCase().startsWith('thought_process') || rawReply.trim().toLowerCase().startsWith('thoughtprocess'))) {
+      const jsonStart = rawReply.indexOf('{');
+      if (jsonStart !== -1) {
+        thoughtProcess = rawReply.substring(0, jsonStart).replace(/^(?:thought_process|thoughtprocess)\s*:?\s*/i, '').trim();
+        cleanedReply = rawReply.substring(jsonStart).trim();
+      } else {
+        thoughtProcess = rawReply.replace(/^(?:thought_process|thoughtprocess)\s*:?\s*/i, '').trim();
+        cleanedReply = '';
       }
+      trace.thoughtProcess = thoughtProcess;
     }
 
     // Tenta fazer o parsing para ver se a IA solicitou execução de ferramenta (callTool)
