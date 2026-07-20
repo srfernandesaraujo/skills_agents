@@ -66,6 +66,11 @@ Perguntas centrais que quase sempre valem a pena:
 Se o usuário já descreveu boa parte disso na mensagem inicial, não repita a
 pergunta — confirme o que entendeu e pergunte só o que falta.
 
+Guarde a resposta da pergunta 2 (e, se for experimental, se houve
+randomização) — ela alimenta o `--desenho`/`--randomizado` de `gerar_pdf` na
+Etapa 7, que gera um checklist de aderência à diretriz de relato adequada
+(CONSORT para ensaio clínico; STROBE para coorte/caso-controle/transversal).
+
 ### Etapa 2 — Pedir a planilha
 
 Peça a planilha (.xlsx ou .csv) com os dados brutos, uma linha por
@@ -80,6 +85,10 @@ ausentes por coluna. Use isso para:
   grupo(s)/exposição, e às covariáveis de ajuste (se houver).
 - Sinalizar dados ausentes relevantes antes de prosseguir (nunca ignore
   silenciosamente uma coluna com muitos `NaN`).
+- Anotar quais colunas são características **basais/demográficas** (idade,
+  sexo, comorbidades, etc.) — elas viram a Tabela 1 do relatório final
+  (`--baseline_vars` em `gerar_pdf`, Etapa 7). O script não adivinha sozinho
+  quais colunas são basais; é você quem confirma isso com o usuário aqui.
 
 ### Etapa 4 — Propor o plano de análise de forma didática (e confirmar antes de rodar)
 
@@ -122,7 +131,8 @@ completa de comandos disponíveis em `scripts/stats_toolkit.py`:
 |---|---|
 | `explorar` | Inventário de colunas/tipos/N |
 | `calcular_diferenca` | Cria coluna calculada (ex: Pressao_6meses - Pressao_Basal = Variacao_PAS) e salva na planilha |
-| `gerar_pdf` | Gera relatório completo em PDF premium (Tabela 1, hipóteses, post-hoc e Métodos Vancouver) |
+| `gerar_pdf` | Gera relatório em PDF: Tabela 1 de basais (`--baseline_vars`), descritivas + boxplot/Q-Q da comparação principal, post-hoc, forest plot (regressões), curva de Kaplan-Meier, checklist CONSORT/STROBE/TRIPOD (`--desenho`), além de **todas** as demais análises já rodadas na sessão |
+| `resetar_sessao` | Apaga o histórico de análises da sessão (`dados/_analises_sessao.jsonl`) — use ao começar uma planilha/projeto novo |
 | `descritivas` | Média, DP, mediana, IC95%, etc. (com ou sem grupo) |
 | `normalidade` | Shapiro-Wilk / KS, por grupo |
 | `homogeneidade_variancia` | Levene |
@@ -141,7 +151,19 @@ completa de comandos disponíveis em `scripts/stats_toolkit.py`:
 
 Depois de cada resultado, **explique o que ele significa em português claro**
 antes de seguir para o próximo teste — não despeje o JSON bruto no usuário.
-Guarde os números exatos (retornados em JSON) para montar o relatório final.
+
+Cada comando (exceto `explorar`, `calcular_diferenca` e `gerar_pdf`) registra
+automaticamente seu resultado em `dados/_analises_sessao.jsonl`. `gerar_pdf`
+lê esse histórico e renderiza **todas** as análises já rodadas na sessão —
+teste t, Mann-Whitney, qui-quadrado, correlação, regressão, Kaplan-Meier,
+correção de múltiplas comparações etc. — cada uma com sua própria seção,
+tabela e frase de relato, **sem recalcular nada por conta própria e sem
+nenhum texto fixo/inventado**: a interpretação é sempre derivada dos números
+reais daquela chamada. Não é preciso (nem recomendado) montar o relatório
+"na mão" a partir do que foi dito no chat — o script já faz isso de forma
+determinística. Se o usuário trocar de planilha/projeto no meio da conversa,
+rode `resetar_sessao` antes de recomeçar, para o relatório final não misturar
+análises de bases de dados diferentes.
 
 ### Etapa 6 — Ficar disponível para dúvidas ao longo do processo
 
@@ -189,7 +211,30 @@ Regras para este documento:
 - Não invente interpretação clínica/teórica além do que os números sustentam
   — significância estatística não é o mesmo que relevância prática; sinalize
   isso quando o tamanho de efeito for pequeno mesmo com p significativo.
-- Apresente o relatório estatístico final em texto formatado Markdown na tela e rode o comando `gerar_pdf` no `stats_toolkit.py` (`{"callTool": "stats_toolkit.py", "args": {"comando": "gerar_pdf", "input": "dados/dados_ensaio_clinico.xlsx", "var": "Variacao_PAS", "group": "Grupo_Tratamento"}}`) para salvar o arquivo PDF em `dados/Relatorio_Estatistico_Premium.pdf` e fornecer o link de download do PDF ao usuário (`[Relatorio_Estatistico_Premium.pdf](/api/skills/estatistico-particular/media?path=dados/Relatorio_Estatistico_Premium.pdf)`).
+- Apresente o relatório estatístico final em texto formatado Markdown na tela
+  e rode o comando `gerar_pdf` no `stats_toolkit.py` (ex.:
+  `{"callTool": "stats_toolkit.py", "args": {"comando": "gerar_pdf", "input": "dados/<planilha_do_usuario>", "var": "<variável do desfecho principal>", "group": "<coluna de grupo, se houver>", "baseline_vars": "<colunas basais separadas por vírgula, se houver>", "desenho": "<ensaio_clinico|coorte|caso_controle|transversal|diagnostico_preditivo, se souber>", "randomizado": <true se ensaio_clinico randomizado>}}`,
+  usando os nomes reais das colunas da planilha do usuário — nunca reaproveite
+  nomes de exemplo de outra conversa. `--var`/`--group` descrevem a
+  comparação principal (descritivas + boxplot/Q-Q + teste + post-hoc),
+  `--baseline_vars` monta a Tabela 1 de características basais por grupo
+  (balanceamento entre braços), e `--desenho` (com a resposta da pergunta 2
+  da Etapa 1) adiciona um checklist de aderência à diretriz de relato correta
+  (CONSORT/STROBE/TRIPOD) — todos opcionais; mesmo sem eles, o relatório já
+  traz todas as demais análises rodadas na sessão (ver Etapa 5), cada uma com
+  sua tabela e, quando fizer sentido (regressões, Kaplan-Meier), seu gráfico
+  (forest plot / curva de sobrevida). O checklist só marca como "coberto" o
+  que realmente foi rodado na sessão — nunca declare aderência total à
+  diretriz por conta própria; itens fora do alcance de um relatório
+  estatístico (registro do ensaio, cegamento, tamanho amostral a priori etc.)
+  aparecem como pendentes para o(a) pesquisador(a) descrever no manuscrito.
+  Isso salva o PDF em `dados/Relatorio_Estatistico_Premium.pdf` — forneça o
+  link de download ao usuário
+  (`[Relatorio_Estatistico_Premium.pdf](/api/skills/estatistico-particular/media?path=dados/Relatorio_Estatistico_Premium.pdf)`).
+  Como o PDF é montado a partir do mesmo `dados/_analises_sessao.jsonl` que
+  você já viu em texto durante a Etapa 5, o `.docx` acima deve reportar
+  exatamente os mesmos números — nunca um valor diferente do que já foi
+  mostrado ao usuário no chat ou no PDF.
 
 ## Referências desta skill
 

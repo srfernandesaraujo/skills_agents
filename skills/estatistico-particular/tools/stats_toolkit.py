@@ -23,11 +23,32 @@ Comandos disponíveis (rode --help em cada um):
 
 import os
 import sys
+import io
 import json
 import argparse
+from datetime import datetime
 import numpy as np
 import pandas as pd
 from scipy import stats
+
+# Em alguns terminais Windows o stdout não é UTF-8 por padrão, o que derruba a
+# impressão de qualquer resultado com caracteres como η, ε, χ ou ≥.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+# Gráficos são opcionais: se matplotlib não estiver instalado, o relatório
+# ainda é gerado (só sem as figuras) em vez de quebrar tudo.
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    MATPLOTLIB_OK = True
+except ImportError:
+    MATPLOTLIB_OK = False
 
 
 # --------------------------------------------------------------------------- #
@@ -150,8 +171,72 @@ def interpretar_p(p, alpha=0.05):
     return "estatisticamente significativo" if p < alpha else "não estatisticamente significativo"
 
 
+MANIFESTO_PATH = os.path.join("dados", "_analises_sessao.jsonl")
+
+# Comandos que não representam um teste/análise a ser citado no relatório final
+# (são utilitários, exploratórios ou o próprio gerador de relatório).
+_COMANDOS_FORA_DO_MANIFESTO = {"explorar", "gerar_pdf", "resetar_sessao", "calcular_diferenca"}
+
+# Contexto do comando em execução, preenchido por main() antes de chamar args.func(args).
+# É um dict mutável (não uma variável module-level reatribuída) para não exigir `global`.
+_SESSAO_CTX = {"comando": None, "args": None}
+
+
+def registrar_manifesto(resultado_arredondado):
+    """Acrescenta o resultado desta chamada ao manifesto da sessão (dados/_analises_sessao.jsonl),
+    para que `gerar_pdf` monte o relatório final a partir dos números realmente calculados e
+    mostrados ao usuário durante a conversa — nunca recalculando por conta própria."""
+    comando = _SESSAO_CTX.get("comando")
+    if not comando or comando in _COMANDOS_FORA_DO_MANIFESTO:
+        return
+    try:
+        args_atual = _SESSAO_CTX.get("args")
+        params = {}
+        if args_atual is not None:
+            params = {k: v for k, v in vars(args_atual).items() if k != "func" and v is not None}
+        pasta = os.path.dirname(MANIFESTO_PATH)
+        if pasta and not os.path.exists(pasta):
+            os.makedirs(pasta, exist_ok=True)
+        entrada = {
+            "comando": comando,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "params": params,
+            "resultado": resultado_arredondado,
+        }
+        with open(MANIFESTO_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entrada, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # o manifesto é um registro auxiliar — nunca deve derrubar o comando principal
+
+
+def ler_manifesto():
+    """Lê todas as entradas já registradas na sessão atual (mais antiga primeiro)."""
+    if not os.path.exists(MANIFESTO_PATH):
+        return []
+    entradas = []
+    with open(MANIFESTO_PATH, "r", encoding="utf-8") as f:
+        for linha in f:
+            linha = linha.strip()
+            if not linha:
+                continue
+            try:
+                entradas.append(json.loads(linha))
+            except json.JSONDecodeError:
+                continue
+    return entradas
+
+
+def cmd_resetar_sessao(args):
+    existia = os.path.exists(MANIFESTO_PATH)
+    if existia:
+        os.remove(MANIFESTO_PATH)
+    saida({"sucesso": True, "manifesto_removido": existia, "mensagem": "Sessão de análises reiniciada — o próximo gerar_pdf partirá de um histórico vazio."})
+
+
 def saida(dados):
-    print(json.dumps(arredondar(dados), ensure_ascii=False, indent=2))
+    arred = arredondar(dados)
+    registrar_manifesto(arred)
+    print(json.dumps(arred, ensure_ascii=False, indent=2))
 
 
 def erro(msg):
@@ -1242,7 +1327,6 @@ def cmd_correcao_multiplas(args):
         nome = "Benjamini-Hochberg (FDR)"
     else:
         erro("Método deve ser 'bonferroni' ou 'fdr_bh'.")
-
     resultado = {
         "metodo": nome,
         "comparacoes": [
@@ -1257,14 +1341,692 @@ def cmd_correcao_multiplas(args):
 # Comando: gerar_pdf (Relatório Estatístico em PDF Premium)
 # --------------------------------------------------------------------------- #
 
+def _br(v, casas=2):
+    """Formata número com vírgula decimal (convenção PT-BR); None/NaN vira 'NC'."""
+    if v is None:
+        return "NC"
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if np.isnan(v):
+        return "NC"
+    return f"{v:.{casas}f}".replace('.', ',')
+
+
+def _pv(p):
+    if p is None:
+        return "não calculável"
+    try:
+        p = float(p)
+    except (TypeError, ValueError):
+        return "não calculável"
+    if np.isnan(p):
+        return "não calculável"
+    return "p < 0,001" if p < 0.001 else f"p = {_br(p, 3)}"
+
+
+def welch_gl(a, b):
+    va, vb = np.var(a, ddof=1), np.var(b, ddof=1)
+    na, nb = len(a), len(b)
+    return (va / na + vb / nb) ** 2 / ((va / na) ** 2 / (na - 1) + (vb / nb) ** 2 / (nb - 1))
+
+
+# --------------------------------------------------------------------------- #
+# Formatadores genéricos de resultado -> seção de relatório (título + parágrafo
+# estilo Vancouver + tabela), um por comando. Usados por gerar_pdf para renderizar
+# QUALQUER análise já registrada no manifesto da sessão, sem recalcular nada e sem
+# nenhum texto fixo — cada frase é montada a partir dos números reais do JSON.
+# --------------------------------------------------------------------------- #
+
+def _fmt_ttest_independente(r, p):
+    var, grp = p.get('var', 'variável'), p.get('group', 'grupo')
+    g1, g2 = r['grupo_1'], r['grupo_2']
+    verbo = "não diferiu significativamente" if 'não' in r['significativo_5pct'] else "diferiu significativamente"
+    narrativa = (
+        f"A variável \"{var}\" {verbo} entre {g1['nome']} (M={_br(g1['media'])}, DP={_br(g1['dp'])}, n={g1['n']}) "
+        f"e {g2['nome']} (M={_br(g2['media'])}, DP={_br(g2['dp'])}, n={g2['n']}); "
+        f"t({_br(r['graus_liberdade'], 1)}) = {_br(r['estatistica_t'])}, {_pv(r['p_valor'])}, "
+        f"diferença de médias = {_br(r['diferenca_medias'])} (IC95% {_br(r['ic95_diferenca'][0])} a {_br(r['ic95_diferenca'][1])}), "
+        f"d de Cohen = {_br(r['tamanho_efeito_cohen_d'], 3)} ({r['interpretacao_efeito']})."
+    )
+    tabela = (["Estatística", "Valor"], [
+        ["Teste", r['teste']],
+        [f"{g1['nome']} (n={g1['n']})", f"M={_br(g1['media'])}; DP={_br(g1['dp'])}"],
+        [f"{g2['nome']} (n={g2['n']})", f"M={_br(g2['media'])}; DP={_br(g2['dp'])}"],
+        ["t (gl)", f"{_br(r['estatistica_t'])} ({_br(r['graus_liberdade'], 1)})"],
+        ["p-valor", _pv(r['p_valor'])],
+        ["Diferença de médias (IC95%)", f"{_br(r['diferenca_medias'])} ({_br(r['ic95_diferenca'][0])} a {_br(r['ic95_diferenca'][1])})"],
+        ["d de Cohen", f"{_br(r['tamanho_efeito_cohen_d'], 3)} ({r['interpretacao_efeito']})"],
+    ])
+    return {"titulo": f"Teste t independente — {var} por {grp}", "narrativa": narrativa, "tabela": tabela}
+
+
+def _fmt_ttest_pareado(r, p):
+    v1, v2 = p.get('var1', 'momento 1'), p.get('var2', 'momento 2')
+    verbo = "não houve alteração significativa" if 'não' in r['significativo_5pct'] else "houve alteração significativa"
+    narrativa = (
+        f"Entre {v1} (M={_br(r['media_1'])}) e {v2} (M={_br(r['media_2'])}), {verbo} "
+        f"(diferença média = {_br(r['diferenca_media'])}, IC95% {_br(r['ic95_diferenca'][0])} a {_br(r['ic95_diferenca'][1])}); "
+        f"t({r['graus_liberdade']}) = {_br(r['estatistica_t'])}, {_pv(r['p_valor'])}, "
+        f"d de Cohen = {_br(r['tamanho_efeito_cohen_d'], 3)} ({r['interpretacao_efeito']})."
+    )
+    tabela = (["Estatística", "Valor"], [
+        ["N pares", r['n_pares']],
+        [f"Média {v1}", _br(r['media_1'])],
+        [f"Média {v2}", _br(r['media_2'])],
+        ["Diferença média (IC95%)", f"{_br(r['diferenca_media'])} ({_br(r['ic95_diferenca'][0])} a {_br(r['ic95_diferenca'][1])})"],
+        ["t (gl)", f"{_br(r['estatistica_t'])} ({r['graus_liberdade']})"],
+        ["p-valor", _pv(r['p_valor'])],
+        ["d de Cohen", f"{_br(r['tamanho_efeito_cohen_d'], 3)} ({r['interpretacao_efeito']})"],
+    ])
+    return {"titulo": f"Teste t pareado — {v1} vs. {v2}", "narrativa": narrativa, "tabela": tabela}
+
+
+def _fmt_mannwhitney(r, p):
+    var, grp = p.get('var', 'variável'), p.get('group', 'grupo')
+    g1, g2 = r['grupo_1'], r['grupo_2']
+    verbo = "não diferiu significativamente" if 'não' in r['significativo_5pct'] else "diferiu significativamente"
+    narrativa = (
+        f"A mediana de \"{var}\" {verbo} entre {g1['nome']} (mediana={_br(g1['mediana'])}, n={g1['n']}) "
+        f"e {g2['nome']} (mediana={_br(g2['mediana'])}, n={g2['n']}); "
+        f"U = {_br(r['estatistica_U'])}, {_pv(r['p_valor'])}, r = {_br(r['tamanho_efeito_r_rank_biserial'], 3)}."
+    )
+    tabela = (["Estatística", "Valor"], [
+        ["Teste", r['teste']],
+        [f"{g1['nome']} (n={g1['n']})", f"mediana={_br(g1['mediana'])}"],
+        [f"{g2['nome']} (n={g2['n']})", f"mediana={_br(g2['mediana'])}"],
+        ["U", _br(r['estatistica_U'])],
+        ["p-valor", _pv(r['p_valor'])],
+        ["r (rank-biserial)", _br(r['tamanho_efeito_r_rank_biserial'], 3)],
+    ])
+    return {"titulo": f"Mann-Whitney U — {var} por {grp}", "narrativa": narrativa, "tabela": tabela}
+
+
+def _fmt_wilcoxon(r, p):
+    v1, v2 = p.get('var1', 'momento 1'), p.get('var2', 'momento 2')
+    verbo = "não houve diferença significativa" if 'não' in r['significativo_5pct'] else "houve diferença significativa"
+    narrativa = (
+        f"Entre {v1} e {v2}, {verbo} (mediana das diferenças = {_br(r['mediana_diferenca'])}); "
+        f"W = {_br(r['estatistica_W'])}, {_pv(r['p_valor'])} (n={r['n_pares']}, "
+        f"{r['n_pares_com_diferenca_nao_nula']} pares com diferença não nula)."
+    )
+    tabela = (["Estatística", "Valor"], [
+        ["N pares (com diferença não nula)", f"{r['n_pares']} ({r['n_pares_com_diferenca_nao_nula']})"],
+        [f"Mediana {v1}", _br(r['mediana_1'])],
+        [f"Mediana {v2}", _br(r['mediana_2'])],
+        ["Mediana da diferença", _br(r['mediana_diferenca'])],
+        ["W", _br(r['estatistica_W'])],
+        ["p-valor", _pv(r['p_valor'])],
+    ])
+    return {"titulo": f"Wilcoxon pareado — {v1} vs. {v2}", "narrativa": narrativa, "tabela": tabela}
+
+
+def _fmt_posthoc_pares(comparacoes, rotulo_estat, campo_estat, campo_p_ajust):
+    linhas = []
+    for c in comparacoes:
+        linhas.append(
+            f"{c['grupo_a']} vs. {c['grupo_b']} ({rotulo_estat}={_br(c[campo_estat])}, "
+            f"p ajustado={_br(c[campo_p_ajust], 4)}, {c['significativo_5pct']})"
+        )
+    return "; ".join(linhas)
+
+
+def _fmt_anova_oneway(r, p):
+    var, grp = p.get('var', 'variável'), p.get('group', 'grupo')
+    nomes = ", ".join(f"{g['nome']} (n={g['n']}, M={_br(g['media'])})" for g in r['grupos'])
+    verbo = "não houve diferença significativa" if 'não' in r['significativo_5pct'] else "houve diferença significativa"
+    narrativa = (
+        f"Comparando {var} entre os grupos {nomes}, {verbo} "
+        f"(F({r['graus_liberdade_entre']},{r['graus_liberdade_dentro']}) = {_br(r['estatistica_F'])}, {_pv(r['p_valor'])}, "
+        f"η² = {_br(r['tamanho_efeito_eta_quadrado'], 4)}, {r['interpretacao_efeito']})."
+    )
+    ph = r.get('posthoc_tukey_hsd')
+    if isinstance(ph, dict):
+        narrativa += " Post-hoc de Tukey HSD: " + _fmt_posthoc_pares(ph['comparacoes_pareadas'], "diferença de médias", "diferenca_medias", "p_valor_ajustado") + "."
+    tabela = (["Estatística", "Valor"], [
+        ["Grupos", nomes],
+        ["F (gl entre, gl dentro)", f"{_br(r['estatistica_F'])} ({r['graus_liberdade_entre']}, {r['graus_liberdade_dentro']})"],
+        ["p-valor", _pv(r['p_valor'])],
+        ["η² (magnitude)", f"{_br(r['tamanho_efeito_eta_quadrado'], 4)} ({r['interpretacao_efeito']})"],
+    ])
+    return {"titulo": f"ANOVA one-way — {var} por {grp}", "narrativa": narrativa, "tabela": tabela}
+
+
+def _fmt_kruskal(r, p):
+    var, grp = p.get('var', 'variável'), p.get('group', 'grupo')
+    nomes = ", ".join(f"{g['nome']} (n={g['n']}, mediana={_br(g['mediana'])})" for g in r['grupos'])
+    verbo = "não houve diferença significativa" if 'não' in r['significativo_5pct'] else "houve diferença significativa"
+    narrativa = (
+        f"Comparando {var} entre os grupos {nomes}, {verbo} "
+        f"(H({r['graus_liberdade']}) = {_br(r['estatistica_H'])}, {_pv(r['p_valor'])}, "
+        f"ε² = {_br(r['tamanho_efeito_epsilon_quadrado'], 4)})."
+    )
+    ph = r.get('posthoc_dunn_bonferroni')
+    if isinstance(ph, dict):
+        narrativa += " Post-hoc de Dunn (Bonferroni): " + _fmt_posthoc_pares(ph['comparacoes_pareadas'], "Z", "estatistica_z", "p_valor_ajustado_bonferroni") + "."
+    tabela = (["Estatística", "Valor"], [
+        ["Grupos", nomes],
+        ["H (gl)", f"{_br(r['estatistica_H'])} ({r['graus_liberdade']})"],
+        ["p-valor", _pv(r['p_valor'])],
+        ["ε² (epsilon-quadrado)", _br(r['tamanho_efeito_epsilon_quadrado'], 4)],
+    ])
+    return {"titulo": f"Kruskal-Wallis — {var} por {grp}", "narrativa": narrativa, "tabela": tabela}
+
+
+def _fmt_qui_quadrado(r, p):
+    v1, v2 = p.get('var1', 'variável 1'), p.get('var2', 'variável 2')
+    tq = r['teste_qui_quadrado']
+    verbo = "não houve associação estatisticamente significativa" if 'não' in tq['significativo_5pct'] else "houve associação estatisticamente significativa"
+    narrativa = (
+        f"Entre \"{v1}\" e \"{v2}\" (N={r['n_total']}), {verbo} "
+        f"(χ²({tq['graus_liberdade']}) = {_br(tq['estatistica'])}, {_pv(tq['p_valor'])}, "
+        f"V de Cramér = {_br(r['tamanho_efeito_V_de_Cramer'], 3)}, {r['interpretacao_efeito']})."
+    )
+    tabela = (["Estatística", "Valor"], [
+        ["Tabela de contingência", f"N={r['n_total']}"],
+        ["χ² (gl)", f"{_br(tq['estatistica'])} ({tq['graus_liberdade']})"],
+        ["p-valor", _pv(tq['p_valor'])],
+        ["V de Cramér", f"{_br(r['tamanho_efeito_V_de_Cramer'], 3)} ({r['interpretacao_efeito']})"],
+        ["Células com esperado < 5", f"{_br(tq['percentual_celulas_esperado_menor_que_5'], 1)}%"],
+    ])
+    fisher = r.get('teste_exato_fisher')
+    if fisher:
+        narrativa += (
+            f" Por se tratar de tabela 2×2, também foi calculado o teste exato de Fisher "
+            f"({_pv(fisher['p_valor'])}; odds ratio = {_br(fisher['razao_de_chances_odds_ratio'], 3)})."
+        )
+        if tq['percentual_celulas_esperado_menor_que_5'] > 20:
+            narrativa += " Dado que mais de 20% das células têm frequência esperada < 5, prefira o resultado do teste exato de Fisher ao qui-quadrado."
+    return {"titulo": f"Associação categórica — {v1} × {v2}", "narrativa": narrativa, "tabela": tabela}
+
+
+def _fmt_correlacao(r, p):
+    v1, v2 = p.get('var1', 'variável 1'), p.get('var2', 'variável 2')
+    verbo = "não apresentaram correlação estatisticamente significativa" if 'não' in r['significativo_5pct'] else f"apresentaram correlação {r['interpretacao_forca']}"
+    simbolo = "ρ" if "Spearman" in r['teste'] else "r"
+    narrativa = (
+        f"\"{v1}\" e \"{v2}\" (n={r['n']}) {verbo} "
+        f"({simbolo} = {_br(r['coeficiente_r'], 3)}, IC95% {_br(r['ic95_r'][0], 3)} a {_br(r['ic95_r'][1], 3)}, {_pv(r['p_valor'])}). "
+        "Correlação não implica causalidade."
+    )
+    tabela = (["Estatística", "Valor"], [
+        ["Método", r['teste']],
+        ["n", r['n']],
+        [f"{simbolo}", _br(r['coeficiente_r'], 3)],
+        ["r²", _br(r['r_quadrado'], 3)],
+        ["IC95%", f"{_br(r['ic95_r'][0], 3)} a {_br(r['ic95_r'][1], 3)}"],
+        ["p-valor", _pv(r['p_valor'])],
+    ])
+    return {"titulo": f"Correlação — {v1} × {v2}", "narrativa": narrativa, "tabela": tabela}
+
+
+def _fmt_regressao_linear(r, p):
+    y, x = p.get('y', 'desfecho'), p.get('x', 'preditores')
+    verbo = "não foi estatisticamente significativo" if 'não' in r['significancia_modelo_global'] else "foi estatisticamente significativo"
+    narrativa = (
+        f"O modelo de regressão linear múltipla para \"{y}\" (preditores: {x}; n={r['n']}) explicou "
+        f"{_br(r['r_quadrado_ajustado'] * 100, 1)}% da variância (R² ajustado = {_br(r['r_quadrado_ajustado'], 3)}); "
+        f"o modelo global {verbo} (F({r['graus_liberdade_modelo']},{r['graus_liberdade_residual']}) = {_br(r['estatistica_F'])}, {_pv(r['p_valor_modelo_global'])}). "
+    )
+    sig_coefs = [c for c in r['coeficientes'] if c['variavel'] != 'Intercepto' and 'não' not in c['significativo_5pct']]
+    if sig_coefs:
+        narrativa += "Preditores independentes significativos: " + "; ".join(
+            f"{c['variavel']} (β={_br(c['coeficiente_beta'], 3)}, IC95% {_br(c['ic95'][0], 3)} a {_br(c['ic95'][1], 3)}, {_pv(c['p_valor'])})"
+            for c in sig_coefs
+        ) + "."
+    else:
+        narrativa += "Nenhum preditor individual atingiu significância estatística a 5%."
+    if r.get('multicolinearidade_VIF'):
+        vif_altos = [v for v in r['multicolinearidade_VIF'] if v['VIF'] > 10]
+        if vif_altos:
+            narrativa += " Atenção: VIF > 10 sugere multicolinearidade relevante para " + ", ".join(v['variavel'] for v in vif_altos) + "."
+    headers = ["Variável", "β (ou OR)", "IC95%", "p-valor"]
+    rows = [[c['variavel'], _br(c['coeficiente_beta'], 3), f"{_br(c['ic95'][0], 3)} a {_br(c['ic95'][1], 3)}", _pv(c['p_valor'])] for c in r['coeficientes']]
+    return {"titulo": f"Regressão linear múltipla — {y}", "narrativa": narrativa, "tabela": (headers, rows)}
+
+
+def _fmt_regressao_logistica(r, p):
+    y, x = p.get('y', r.get('variavel_dependente', 'desfecho')), p.get('x', 'preditores')
+    sig_coefs = [c for c in r['coeficientes'] if c['variavel'] != 'Intercepto' and 'não' not in c['significativo_5pct']]
+    narrativa = (
+        f"No modelo de regressão logística para \"{y}\" (preditores: {x}; n={r['n']}, prevalência do desfecho = "
+        f"{_br(r['prevalencia_evento_y1'] * 100, 1)}%; pseudo-R² de McFadden = {_br(r['pseudo_r2_mcfadden'], 3)}), "
+    )
+    if sig_coefs:
+        narrativa += "associaram-se de forma independente com o desfecho: " + "; ".join(
+            f"{c['variavel']} (OR={_br(c['razao_de_chances_OR'], 3)}, IC95% {_br(c['ic95_OR'][0], 3)} a {_br(c['ic95_OR'][1], 3)}, {_pv(c['p_valor'])})"
+            for c in sig_coefs
+        ) + "."
+    else:
+        narrativa += "nenhum preditor individual atingiu significância estatística a 5%."
+    headers = ["Variável", "OR", "IC95% (OR)", "p-valor"]
+    rows = [[c['variavel'], _br(c['razao_de_chances_OR'], 3) if c['razao_de_chances_OR'] is not None else "—",
+             f"{_br(c['ic95_OR'][0], 3)} a {_br(c['ic95_OR'][1], 3)}" if c['ic95_OR'] else "—", _pv(c['p_valor'])] for c in r['coeficientes']]
+    return {"titulo": f"Regressão logística binária — {y}", "narrativa": narrativa, "tabela": (headers, rows)}
+
+
+def _fmt_kaplan_meier(r, p):
+    tempo, evento, grp = p.get('tempo', 'tempo'), p.get('evento', 'evento'), p.get('group')
+    narrativa = f"Análise de sobrevida (Kaplan-Meier) para \"{tempo}\"/\"{evento}\" (N={r['n_total']}, {r['n_eventos']} eventos, {r['n_censuras']} censuras). "
+    rows = []
+    if grp and r.get('curvas_por_grupo'):
+        for nome, c in r['curvas_por_grupo'].items():
+            med = _br(c['mediana_sobrevida'], 1) if c['mediana_sobrevida'] is not None else "não alcançada"
+            rows.append([nome, c['n'], c['n_eventos'], med])
+        lr = r.get('teste_logrank')
+        if lr:
+            verbo = "sem diferença estatisticamente significativa" if 'não' in lr['significativo_5pct'] else "com diferença estatisticamente significativa"
+            narrativa += f"As curvas por grupo ({grp}) foram comparadas por log-rank, {verbo} (χ²({lr['graus_liberdade']}) = {_br(lr['estatistica_qui_quadrado'])}, {_pv(lr['p_valor'])})."
+        headers = ["Grupo", "N", "Eventos", "Sobrevida mediana"]
+    else:
+        med = _br(r.get('mediana_sobrevida'), 1) if r.get('mediana_sobrevida') is not None else "não alcançada"
+        narrativa += f"Sobrevida mediana = {med}."
+        headers, rows = ["N", "Eventos", "Censuras", "Sobrevida mediana"], [[r['n_total'], r['n_eventos'], r['n_censuras'], med]]
+    return {"titulo": f"Kaplan-Meier — {tempo}" + (f" por {grp}" if grp else ""), "narrativa": narrativa, "tabela": (headers, rows)}
+
+
+def _fmt_correcao_multiplas(r, p):
+    narrativa = f"Correção para múltiplas comparações ({r['metodo']}) aplicada a {len(r['comparacoes'])} p-valores: " + "; ".join(
+        f"#{c['indice']} {_pv(c['p_bruto'])} → p ajustado={_br(c['p_ajustado'], 4)} ({c['significativo_5pct']})" for c in r['comparacoes']
+    ) + "."
+    headers = ["#", "p bruto", "p ajustado", "Conclusão"]
+    rows = [[c['indice'], _pv(c['p_bruto']), _br(c['p_ajustado'], 4), c['significativo_5pct']] for c in r['comparacoes']]
+    return {"titulo": f"Correção de múltiplas comparações ({r['metodo']})", "narrativa": narrativa, "tabela": (headers, rows)}
+
+
+COMANDO_FORMATADORES = {
+    'ttest_independente': _fmt_ttest_independente,
+    'ttest_pareado': _fmt_ttest_pareado,
+    'mannwhitney': _fmt_mannwhitney,
+    'wilcoxon': _fmt_wilcoxon,
+    'anova_oneway': _fmt_anova_oneway,
+    'kruskal': _fmt_kruskal,
+    'qui_quadrado': _fmt_qui_quadrado,
+    'correlacao': _fmt_correlacao,
+    'regressao_linear': _fmt_regressao_linear,
+    'regressao_logistica': _fmt_regressao_logistica,
+    'kaplan_meier': _fmt_kaplan_meier,
+    'correcao_multiplas': _fmt_correcao_multiplas,
+}
+
+# Comandos de comparação de grupos que também podem aparecer como "comparação
+# principal" (seção 1-3, guiada por --var/--group) — para não duplicar a mesma
+# análise na seção de "demais análises da sessão".
+_COMPARACAO_GRUPOS_COMANDOS = {'ttest_independente', 'mannwhitney', 'anova_oneway', 'kruskal'}
+
+
+# --------------------------------------------------------------------------- #
+# Tabela 1 (características basais) — comparação de balanceamento entre braços,
+# independente da comparação principal de desfecho.
+# --------------------------------------------------------------------------- #
+
+def _detectar_tipo_coluna(serie):
+    s_num = pd.to_numeric(serie, errors="coerce")
+    n_validos = serie.notna().sum()
+    prop_num = s_num.notna().sum() / max(n_validos, 1)
+    return "numerica" if prop_num > 0.9 and n_validos > 0 else "categorica"
+
+
+def _comparar_grupos_numerico(grupos_dados):
+    """Escolhe automaticamente teste paramétrico/não paramétrico (mesma lógica da
+    comparação principal) e devolve (nome_teste, p_valor) — usado para a coluna
+    de p-valor de balanceamento na Tabela 1, sem post-hoc/effect size (não é o
+    desfecho, só uma checagem de equilíbrio entre braços)."""
+    validos = [g for g in grupos_dados if len(g) > 0]
+    if len(validos) < 2:
+        return None, None
+    norm_ok = all(len(g) < 3 or stats.shapiro(g)[1] >= 0.05 for g in validos)
+    try:
+        _, lev_p = stats.levene(*validos)
+    except Exception:
+        lev_p = 1.0
+    if len(validos) == 2:
+        a, b = validos
+        if len(a) < 2 or len(b) < 2:
+            return None, None
+        if norm_ok and lev_p >= 0.05:
+            return "Teste t", stats.ttest_ind(a, b, equal_var=True)[1]
+        if norm_ok:
+            return "Teste t de Welch", stats.ttest_ind(a, b, equal_var=False)[1]
+        return "Mann-Whitney U", stats.mannwhitneyu(a, b, alternative='two-sided')[1]
+    if norm_ok and lev_p >= 0.05:
+        return "ANOVA", stats.f_oneway(*validos)[1]
+    return "Kruskal-Wallis", stats.kruskal(*validos)[1]
+
+
+def _comparar_grupos_categorico(df, col_var, col_group):
+    sub = df[[col_var, col_group]].dropna()
+    tabela = pd.crosstab(sub[col_var], sub[col_group])
+    if tabela.shape[0] < 2 or tabela.shape[1] < 2:
+        return None, None
+    chi2, p, gl, esperado = stats.chi2_contingency(tabela)
+    if tabela.shape == (2, 2):
+        return "Fisher exato", stats.fisher_exact(tabela.to_numpy())[1]
+    return "Qui-quadrado", p
+
+
+def construir_tabela1_basais(df, col_group, baseline_vars):
+    """Monta a Tabela 1 clássica de artigo (características basais por braço +
+    p-valor de balanceamento), a partir de uma lista de colunas indicadas por
+    quem conduziu a entrevista (Etapa 1/3) — não adivinha sozinho quais colunas
+    são covariáveis basais."""
+    if not col_group or not baseline_vars:
+        return None
+    nomes_grupos = [str(g) for g in df[col_group].dropna().unique()]
+    linhas = []
+    for var in baseline_vars:
+        var = var.strip()
+        if not var or var not in df.columns:
+            continue
+        tipo = _detectar_tipo_coluna(df[var])
+        if tipo == "numerica":
+            grupos_dados = [limpar_numerico(df[df[col_group] == g][var])[0] for g in df[col_group].dropna().unique()]
+            valores = []
+            for g in grupos_dados:
+                if len(g) == 0:
+                    valores.append("—")
+                elif len(g) > 1:
+                    valores.append(f"{_br(np.mean(g))} ± {_br(np.std(g, ddof=1))}")
+                else:
+                    valores.append(_br(np.mean(g)))
+            teste, p = _comparar_grupos_numerico(grupos_dados)
+            linhas.append([var, *valores, _pv(p) if p is not None else "NC", teste or "—"])
+        else:
+            sub = df[[var, col_group]].dropna()
+            categorias = sub[var].value_counts().index.tolist()[:6]
+            teste, p = _comparar_grupos_categorico(df, var, col_group)
+            for cat in categorias:
+                valores = []
+                for g in df[col_group].dropna().unique():
+                    sub_g = sub[sub[col_group] == g]
+                    n_g = len(sub_g)
+                    n_cat = int((sub_g[var] == cat).sum())
+                    pct = 100 * n_cat / n_g if n_g else 0
+                    valores.append(f"{n_cat} ({_br(pct, 1)}%)")
+                linhas.append([f"{var} = {cat}", *valores, _pv(p) if p is not None else "NC", teste or "—"])
+    if not linhas:
+        return None
+    return {"headers": ["Característica", *nomes_grupos, "p-valor", "Teste"], "linhas": linhas}
+
+
+# --------------------------------------------------------------------------- #
+# Gráficos (matplotlib) — cada função devolve uma Figure ou None; a inserção no
+# PDF (conversão para Image do reportlab) é feita por um helper local dentro de
+# cmd_gerar_pdf, onde Image/ImageReader já estão importados.
+# --------------------------------------------------------------------------- #
+
+def _fig_boxplot(grupos_dados, grupos_nomes, var_nome):
+    validos = [(n, g) for n, g in zip(grupos_nomes, grupos_dados) if len(g) > 0]
+    if not validos:
+        return None
+    nomes, dados = zip(*validos)
+    fig, ax = plt.subplots(figsize=(5.2, 3.2))
+    bp = ax.boxplot(dados, patch_artist=True, showmeans=True)
+    ax.set_xticks(range(1, len(nomes) + 1))
+    ax.set_xticklabels(nomes)
+    for patch in bp['boxes']:
+        patch.set_facecolor('#DBEAFE')
+        patch.set_edgecolor('#1D4ED8')
+    rng = np.random.default_rng(0)
+    for i, g in enumerate(dados):
+        x = rng.normal(i + 1, 0.04, size=len(g))
+        ax.scatter(x, g, alpha=0.5, s=12, color='#0F172A', zorder=3)
+    ax.set_ylabel(var_nome)
+    ax.set_title(f"Distribuição de {var_nome} por grupo", fontsize=10)
+    ax.spines[['top', 'right']].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def _fig_qqplot(grupos_dados, grupos_nomes, var_nome):
+    validos = [(n, g) for n, g in zip(grupos_nomes, grupos_dados) if len(g) >= 3]
+    if not validos:
+        return None
+    fig, axes = plt.subplots(1, len(validos), figsize=(3.0 * len(validos), 3.0), squeeze=False)
+    for ax, (nome, g) in zip(axes[0], validos):
+        stats.probplot(g, dist="norm", plot=ax)
+        ax.set_title(f"Q-Q: {nome}", fontsize=9)
+        ax.get_lines()[0].set_markerfacecolor('#1D4ED8')
+        ax.get_lines()[0].set_markeredgecolor('#1D4ED8')
+        ax.get_lines()[0].set_markersize(4)
+        ax.get_lines()[1].set_color('#DC2626')
+        ax.spines[['top', 'right']].set_visible(False)
+    fig.suptitle(f"Avaliação visual de normalidade — {var_nome}", fontsize=10)
+    fig.tight_layout()
+    return fig
+
+
+def _fig_forest(coeficientes, usa_or, titulo):
+    coefs = [c for c in coeficientes if c['variavel'] != 'Intercepto']
+    campo_valor = 'razao_de_chances_OR' if usa_or else 'coeficiente_beta'
+    campo_ic = 'ic95_OR' if usa_or else 'ic95'
+    coefs = [c for c in coefs if c.get(campo_valor) is not None and c.get(campo_ic)]
+    if not coefs:
+        return None
+    coefs = coefs[::-1]
+    fig, ax = plt.subplots(figsize=(5.2, max(1.6, 0.5 * len(coefs) + 1)))
+    for i, c in enumerate(coefs):
+        v, ic = c[campo_valor], c[campo_ic]
+        ax.plot([ic[0], ic[1]], [i, i], color='#1D4ED8', lw=1.5, zorder=2)
+        ax.plot(v, i, 'o', color='#0F172A', ms=6, zorder=3)
+    ax.axvline(1.0 if usa_or else 0.0, color='#DC2626', linestyle='--', lw=1)
+    ax.set_yticks(range(len(coefs)))
+    ax.set_yticklabels([c['variavel'] for c in coefs])
+    ax.set_xlabel("Odds ratio (IC95%)" if usa_or else "Coeficiente β (IC95%)")
+    ax.set_title(titulo, fontsize=10)
+    ax.spines[['top', 'right']].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def _fig_km(resultado, tempo_label):
+    curvas = resultado.get('curvas_por_grupo')
+    fig, ax = plt.subplots(figsize=(5.2, 3.4))
+    if curvas:
+        cores = plt.get_cmap('tab10').colors
+        for i, (nome, c) in enumerate(curvas.items()):
+            pontos = c.get('pontos_curva') or []
+            if not pontos:
+                continue
+            xs = [0] + [p['tempo'] for p in pontos]
+            ys = [1.0] + [p['sobrevida_acumulada'] for p in pontos]
+            ax.step(xs, ys, where='post', label=f"{nome} (n={c['n']})", color=cores[i % len(cores)])
+        ax.legend(fontsize=7)
+    else:
+        pontos = resultado.get('pontos_curva') or []
+        if not pontos:
+            plt.close(fig)
+            return None
+        xs = [0] + [p['tempo'] for p in pontos]
+        ys = [1.0] + [p['sobrevida_acumulada'] for p in pontos]
+        ax.step(xs, ys, where='post', color='#1D4ED8')
+    ax.set_ylim(0, 1.05)
+    ax.set_xlabel(tempo_label)
+    ax.set_ylabel("Sobrevida acumulada")
+    ax.set_title("Curva de Kaplan-Meier", fontsize=10)
+    ax.spines[['top', 'right']].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+# --------------------------------------------------------------------------- #
+# Checklist de aderência a diretriz de relato (CONSORT / STROBE / TRIPOD)
+# --------------------------------------------------------------------------- #
+# A entrevista de desenho do estudo (Etapa 1 do skill.md) acontece no chat,
+# antes de qualquer dado ser carregado — não há como o script "adivinhar" se é
+# um ensaio clínico ou um estudo de coorte a partir da planilha. Por isso quem
+# conduziu a entrevista informa o desenho via --desenho ao chamar gerar_pdf.
+# O checklist é montado de forma honesta: só marca como "coberto" o item que
+# realmente foi produzido nesta sessão (via o manifesto), e é explícito sobre
+# tudo que fica de fora do escopo de um relatório puramente estatístico
+# (registro do ensaio, fluxograma, cegamento, tamanho amostral a priori etc.)
+# — nunca declara aderência total à diretriz por conta própria.
+
+_SINONIMOS_DESENHO = {
+    "ensaio_clinico": ["ensaio", "ensaio_clinico", "ensaioclinico", "rct", "trial", "experimental", "clinical_trial"],
+    "coorte": ["coorte", "cohort"],
+    "caso_controle": ["caso_controle", "casocontrole", "case_control"],
+    "transversal": ["transversal", "cross_sectional", "crosssectional", "corte_transversal"],
+    "diagnostico_preditivo": ["diagnostico", "prognostico", "preditivo", "predicao", "tripod", "diagnostico_preditivo"],
+}
+
+
+def _remover_acentos(txt):
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", txt) if not unicodedata.combining(c))
+
+
+def _normalizar_desenho(txt):
+    if not txt:
+        return None
+    chave = _remover_acentos(str(txt).strip().lower()).replace("-", "_").replace(" ", "_")
+    for canonico, sinonimos in _SINONIMOS_DESENHO.items():
+        if chave == canonico or chave in sinonimos:
+            return canonico
+    return None
+
+
+DIRETRIZES_RELATO = {
+    "ensaio_clinico": {
+        "nome": "CONSORT 2010",
+        "descricao": "ensaio clínico",
+        "itens_sempre": [
+            ("Métodos estatísticos", "Testes de hipótese, pressupostos verificados e medidas de efeito com IC95% reportados."),
+            ("Desfechos com estimativa de precisão", "Reportados com estatística de teste, p-valor e IC95%/tamanho de efeito, nunca só p-valor."),
+        ],
+        "itens_condicionais": {
+            "tabela1": ("Dados basais por grupo", "Tabela 1 com características basais e balanceamento entre braços."),
+            "correcao_multiplas": ("Ajuste para múltiplas comparações", "Correção (Bonferroni/FDR) aplicada e reportada."),
+            "posthoc": ("Comparações pareadas pós-teste global", "Post-hoc com correção reportado após teste global significativo."),
+            "regressao_linear": ("Análise ajustada (covariáveis)", "Modelo de regressão multivariável reportado."),
+            "regressao_logistica": ("Análise ajustada (covariáveis)", "Modelo de regressão multivariável reportado."),
+            "kaplan_meier": ("Desfecho de tempo até evento", "Curva de sobrevida e teste log-rank reportados."),
+        },
+        "itens_fora_do_escopo": [
+            "Registro do ensaio (nº de registro, ex. ClinicalTrials.gov) e protocolo",
+            "Diagrama de fluxo CONSORT (triagem, alocação, seguimento, perdas/exclusões)",
+            "Geração da sequência de randomização e ocultação de alocação",
+            "Cegamento (quem foi cegado e como)",
+            "Cálculo de tamanho amostral/poder a priori",
+            "Critérios de elegibilidade, período e local de recrutamento",
+            "Financiamento e conflitos de interesse",
+        ],
+    },
+    "coorte": {
+        "nome": "STROBE (estudo de coorte)",
+        "descricao": "estudo observacional de coorte",
+        "itens_sempre": [
+            ("Métodos estatísticos", "Testes de hipótese, pressupostos verificados e medidas de efeito com IC95% reportados."),
+            ("Variáveis e desfechos", "Definidos e descritos com estatística descritiva completa."),
+        ],
+        "itens_condicionais": {
+            "tabela1": ("Características basais por grupo/exposição", "Tabela 1 com balanceamento entre grupos de exposição."),
+            "correcao_multiplas": ("Ajuste para múltiplas comparações", "Correção (Bonferroni/FDR) aplicada e reportada."),
+            "regressao_linear": ("Controle de confundidores", "Modelo multivariável ajustado reportado."),
+            "regressao_logistica": ("Controle de confundidores", "Modelo multivariável ajustado reportado."),
+            "kaplan_meier": ("Desfecho de tempo até evento e perdas de seguimento", "Curva de sobrevida e teste log-rank reportados."),
+        },
+        "itens_fora_do_escopo": [
+            "Fonte da coorte, período e critérios de elegibilidade",
+            "Métodos de recrutamento e de acompanhamento (perdas, tempo de seguimento)",
+            "Estratégias de controle de viés além do ajuste estatístico (ex. matching)",
+            "Justificativa do tamanho amostral disponível",
+            "Financiamento e conflitos de interesse",
+        ],
+    },
+    "caso_controle": {
+        "nome": "STROBE (caso-controle)",
+        "descricao": "estudo observacional caso-controle",
+        "itens_sempre": [
+            ("Métodos estatísticos", "Testes de hipótese, pressupostos verificados e medidas de efeito (OR) com IC95% reportados."),
+            ("Variáveis e desfechos", "Definidos e descritos com estatística descritiva completa."),
+        ],
+        "itens_condicionais": {
+            "tabela1": ("Características basais casos vs. controles", "Tabela 1 com balanceamento entre casos e controles."),
+            "correcao_multiplas": ("Ajuste para múltiplas comparações", "Correção (Bonferroni/FDR) aplicada e reportada."),
+            "regressao_logistica": ("Controle de confundidores (OR ajustado)", "Modelo de regressão logística multivariável reportado."),
+        },
+        "itens_fora_do_escopo": [
+            "Critérios de definição e seleção de casos e controles",
+            "Método de pareamento (matching), se houver",
+            "Fonte de exposição e possíveis vieses de recordação/seleção",
+            "Justificativa da razão caso:controle e do tamanho amostral",
+            "Financiamento e conflitos de interesse",
+        ],
+    },
+    "transversal": {
+        "nome": "STROBE (transversal)",
+        "descricao": "estudo observacional transversal",
+        "itens_sempre": [
+            ("Métodos estatísticos", "Testes de hipótese, pressupostos verificados e medidas de efeito com IC95% reportados."),
+            ("Variáveis e desfechos", "Definidos e descritos com estatística descritiva completa."),
+        ],
+        "itens_condicionais": {
+            "tabela1": ("Características basais por grupo", "Tabela 1 com balanceamento entre grupos comparados."),
+            "correcao_multiplas": ("Ajuste para múltiplas comparações", "Correção (Bonferroni/FDR) aplicada e reportada."),
+            "regressao_linear": ("Controle de confundidores", "Modelo multivariável ajustado reportado."),
+            "regressao_logistica": ("Controle de confundidores", "Modelo multivariável ajustado reportado."),
+        },
+        "itens_fora_do_escopo": [
+            "Contexto, local e período em que os dados foram coletados",
+            "Critérios de elegibilidade e estratégia de amostragem",
+            "Possíveis vieses de seleção/informação",
+            "Justificativa do tamanho amostral disponível",
+            "Financiamento e conflitos de interesse",
+        ],
+    },
+    "diagnostico_preditivo": {
+        "nome": "TRIPOD",
+        "descricao": "estudo de predição/diagnóstico",
+        "itens_sempre": [
+            ("Especificação do modelo", "Preditores, desfecho e forma do modelo (linear/logístico) descritos."),
+            ("Desempenho do modelo", "Medidas de ajuste (R², pseudo-R², acurácia) reportadas."),
+        ],
+        "itens_condicionais": {
+            "regressao_linear": ("Coeficientes do modelo com IC95%", "Reportados com erro padrão, IC95% e p-valor por preditor."),
+            "regressao_logistica": ("Odds ratio por preditor com IC95%", "Reportados com IC95% e p-valor por preditor."),
+        },
+        "itens_fora_do_escopo": [
+            "Validação interna (bootstrap/cross-validation) ou externa do modelo",
+            "Tratamento de dados ausentes no desenvolvimento do modelo",
+            "Forma funcional testada para preditores contínuos e possíveis interações",
+            "Aplicabilidade clínica e população-alvo do modelo",
+        ],
+    },
+}
+
+
+def montar_checklist_diretriz(desenho_key, flags):
+    """flags: dict com chaves tabela1/correcao_multiplas/posthoc/regressao_linear/
+    regressao_logistica/kaplan_meier -> bool, conforme o que foi de fato produzido
+    nesta sessão (nunca marca um item como coberto só porque o desenho combina
+    com ele — só se o comando/seção correspondente realmente rodou)."""
+    cfg = DIRETRIZES_RELATO.get(desenho_key)
+    if not cfg:
+        return None
+    linhas = []
+    for item, obs in cfg["itens_sempre"]:
+        linhas.append([item, "Coberto neste relatório", obs])
+    for chave_flag, (item, obs) in cfg["itens_condicionais"].items():
+        if flags.get(chave_flag):
+            linhas.append([item, "Coberto neste relatório", obs])
+    for item in cfg["itens_fora_do_escopo"]:
+        linhas.append([item, "Fora do escopo deste relatório", "A descrever pelo(a) pesquisador(a) no manuscrito."])
+    return {"nome": cfg["nome"], "descricao": cfg["descricao"], "linhas": linhas}
+
+
 def cmd_gerar_pdf(args):
     df, real_path = carregar_dados_com_caminho(args.input, args.sheet)
     if args:
         df, _ = resolver_e_criar_colunas(df, args)
 
-    var_alvo = getattr(args, 'var', None) or 'Variacao_PAS'
-    grupo_alvo = getattr(args, 'group', None) or 'Grupo_Tratamento'
-    out_name = getattr(args, 'out', None) or getattr(args, 'output', None) or 'Relatorio_Estatistico_Premium.pdf'
+    var_alvo = getattr(args, 'var', None)
+    grupo_alvo = getattr(args, 'group', None)
+    baseline_vars = [v for v in (getattr(args, 'baseline_vars', None) or '').split(',') if v.strip()]
+    desenho_key = _normalizar_desenho(getattr(args, 'desenho', None))
+    randomizado = bool(getattr(args, 'randomizado', False))
+    out_name = getattr(args, 'out', None) or getattr(args, 'output', None) or 'Relatorio_Estatistico_HighImpact.pdf'
 
     if not out_name.endswith('.pdf'):
         out_name += '.pdf'
@@ -1278,140 +2040,393 @@ def cmd_gerar_pdf(args):
     if out_dir and not os.path.exists(out_dir):
         os.makedirs(out_dir, exist_ok=True)
 
-    col_var = next((c for c in df.columns if c.strip().lower() == var_alvo.strip().lower()), None)
-    col_group = next((c for c in df.columns if c.strip().lower() == grupo_alvo.strip().lower()), None)
+    col_var = None
+    if var_alvo:
+        col_var = next((c for c in df.columns if c.strip().lower() == var_alvo.strip().lower()), None)
+        if not col_var:
+            erro(f"Coluna '{var_alvo}' não encontrada na planilha. Colunas disponíveis: {list(df.columns)}")
 
-    if not col_var:
-        erro(f"Coluna '{var_alvo}' não encontrada na planilha. Colunas disponíveis: {list(df.columns)}")
+    col_group = None
+    if grupo_alvo:
+        col_group = next((c for c in df.columns if c.strip().lower() == grupo_alvo.strip().lower()), None)
+        if not col_group:
+            erro(f"Coluna de grupo '{grupo_alvo}' não encontrada na planilha. Colunas disponíveis: {list(df.columns)}")
+
+    tabela1_basais = construir_tabela1_basais(df, col_group, baseline_vars)
 
     desc_rows = []
-    grupos_unicos = df[col_group].dropna().unique() if col_group else ['Geral']
-
-    for g in grupos_unicos:
-        sub = df[df[col_group] == g][col_var] if col_group else df[col_var]
-        arr, n_tot, n_val = limpar_numerico(sub)
-        if len(arr) > 0:
-            m = np.mean(arr)
-            sd = np.std(arr, ddof=1) if len(arr) > 1 else 0
-            med = np.median(arr)
-            mn, mx = np.min(arr), np.max(arr)
-            se = sd / np.sqrt(len(arr)) if len(arr) > 1 else 0
-            tcrit = stats.t.ppf(0.975, df=len(arr)-1) if len(arr) > 1 else 1.96
-            ic_low, ic_high = m - tcrit * se, m + tcrit * se
-            desc_rows.append({
-                'grupo': str(g),
-                'n': n_val,
-                'media_ic': f"{m:.2f} ({ic_low:.2f} a {ic_high:.2f})",
-                'sd': f"{sd:.2f}",
-                'mediana': f"{med:.2f}",
-                'min': f"{mn:.2f}",
-                'max': f"{mx:.2f}"
-            })
-
+    grupos_unicos = []
+    grupos_dados = []
     norm_res = []
     norm_violada = False
-    for g in grupos_unicos:
-        sub = df[df[col_group] == g][col_var] if col_group else df[col_var]
-        arr, _, _ = limpar_numerico(sub)
-        if len(arr) >= 3:
-            stat, pval = stats.shapiro(arr)
-            if pval < 0.05:
-                norm_violada = True
-            norm_res.append(f"{g}: p={pval:.4f} ({'normal' if pval >= 0.05 else 'não normal'})")
+    lev_stat, lev_pval = None, None
+    comp_titulo, comp_detalhe, posthoc_rows = None, None, []
 
-    comp_titulo = "ANOVA One-Way (Paramétrico)"
-    comp_detalhe = ""
-    posthoc_rows = []
+    if col_var:
+        grupos_unicos = list(df[col_group].dropna().unique()) if col_group else ['Geral']
 
-    if col_group and len(grupos_unicos) >= 2:
-        grupos_dados = [limpar_numerico(df[df[col_group] == g][col_var])[0] for g in grupos_unicos]
-        if norm_violada or any(len(g) < 3 for g in grupos_dados):
-            h_stat, p_val = stats.kruskal(*grupos_dados)
-            comp_titulo = "Teste de Kruskal-Wallis (Não Paramétrico)"
-            n_tot = sum(len(g) for g in grupos_dados)
-            eps_sq = (h_stat - len(grupos_unicos) + 1) / (n_tot - len(grupos_unicos)) if n_tot > len(grupos_unicos) else 0
-            comp_detalhe = f"H({len(grupos_unicos)-1}) = {h_stat:.2f}, p = {p_val:.4f}; Epsilon² = {eps_sq:.4f} (Grande magnitude do efeito)"
+        for g in grupos_unicos:
+            sub = df[df[col_group] == g][col_var] if col_group else df[col_var]
+            arr, n_tot, n_val = limpar_numerico(sub)
+            if len(arr) > 0:
+                m = np.mean(arr)
+                sd = np.std(arr, ddof=1) if len(arr) > 1 else 0
+                med = np.median(arr)
+                q25, q75 = np.percentile(arr, 25), np.percentile(arr, 75)
+                iqr = q75 - q25
+                mn, mx = np.min(arr), np.max(arr)
+                se = sd / np.sqrt(len(arr)) if len(arr) > 1 else 0
+                tcrit = stats.t.ppf(0.975, df=len(arr) - 1) if len(arr) > 1 else 1.96
+                ic_low, ic_high = m - tcrit * se, m + tcrit * se
+                skew_val = stats.skew(arr) if len(arr) >= 3 else 0.0
 
-            for i in range(len(grupos_unicos)):
-                for j in range(i+1, len(grupos_unicos)):
-                    g1, g2 = grupos_unicos[i], grupos_unicos[j]
-                    d1, d2 = grupos_dados[i], grupos_dados[j]
-                    u_stat, p_pair = stats.mannwhitneyu(d1, d2, alternative='two-sided')
-                    p_adj = min(p_pair * (len(grupos_unicos)*(len(grupos_unicos)-1)/2), 1.0)
-                    posthoc_rows.append([f"{g1} vs {g2}", f"Z = {u_stat:.1f}", f"{p_adj:.4f}", "Significativo" if p_adj < 0.05 else "Não significativo"])
-        else:
-            f_stat, p_val = stats.f_oneway(*grupos_dados)
-            comp_titulo = "ANOVA One-Way (Paramétrico)"
-            comp_detalhe = f"F({len(grupos_unicos)-1}, {sum(len(g) for g in grupos_dados)-len(grupos_unicos)}) = {f_stat:.2f}, p = {p_val:.4f}"
+                desc_rows.append({
+                    'grupo': str(g),
+                    'n': n_val,
+                    'media_ic': f"{_br(m)} ({_br(ic_low)} a {_br(ic_high)})",
+                    'sd': _br(sd),
+                    'mediana': _br(med),
+                    'iqr': f"{_br(iqr)} ({_br(q25)} a {_br(q75)})",
+                    'min_max': f"{_br(mn)} a {_br(mx)}",
+                    'skew': _br(skew_val)
+                })
+
+        for g in grupos_unicos:
+            sub = df[df[col_group] == g][col_var] if col_group else df[col_var]
+            arr, _, _ = limpar_numerico(sub)
+            if len(arr) >= 3:
+                stat, pval = stats.shapiro(arr)
+                if pval < 0.05:
+                    norm_violada = True
+                status_str = "compatível com normal" if pval >= 0.05 else "assimétrica, não normal"
+                norm_res.append(f"{g}: W={_br(stat, 3)}, {_pv(pval)} ({status_str})")
+
+        grupos_dados = [limpar_numerico(df[df[col_group] == g][col_var] if col_group else df[col_var])[0] for g in grupos_unicos]
+
+        # Comparação entre grupos: só faz sentido com coluna de grupo e 2+ grupos com dados.
+        if col_group and len([g for g in grupos_dados if len(g) > 0]) >= 2:
+            lev_stat, lev_pval = stats.levene(*grupos_dados)
+
+            if len(grupos_unicos) == 2:
+                a, b = grupos_dados[0], grupos_dados[1]
+                if not norm_violada and lev_pval >= 0.05 and len(a) >= 2 and len(b) >= 2:
+                    stat, pv = stats.ttest_ind(a, b, equal_var=True)
+                    comp_titulo = "Teste t de Student (paramétrico)"
+                    d = cohen_d_independente(a, b)
+                    comp_detalhe = f"t({len(a) + len(b) - 2}) = {_br(stat)}, {_pv(pv)}; d de Cohen = {_br(d, 3)} ({interpretar_cohen_d(abs(d))})"
+                elif not norm_violada and len(a) >= 2 and len(b) >= 2:
+                    stat, pv = stats.ttest_ind(a, b, equal_var=False)
+                    comp_titulo = "Teste t de Welch (paramétrico, variâncias desiguais)"
+                    d = cohen_d_independente(a, b)
+                    comp_detalhe = f"t({_br(welch_gl(a, b), 1)}) = {_br(stat)}, {_pv(pv)}; d de Cohen = {_br(d, 3)} ({interpretar_cohen_d(abs(d))})"
+                else:
+                    comp_titulo = "Mann-Whitney U (não paramétrico)"
+                    u_stat, pv = stats.mannwhitneyu(a, b, alternative='two-sided')
+                    r_rb = rank_biserial_mannwhitney(u_stat, len(a), len(b))
+                    comp_detalhe = f"U = {_br(u_stat)}, {_pv(pv)}; r = {_br(r_rb, 3)}"
+            else:
+                if norm_violada or lev_pval < 0.05 or any(len(g) < 3 for g in grupos_dados):
+                    h_stat, p_val = stats.kruskal(*grupos_dados)
+                    comp_titulo = "Kruskal-Wallis (não paramétrico)"
+                    n_tot = sum(len(g) for g in grupos_dados)
+                    eps_sq = (h_stat - len(grupos_unicos) + 1) / (n_tot - len(grupos_unicos)) if n_tot > len(grupos_unicos) else 0
+                    comp_detalhe = f"H({len(grupos_unicos) - 1}) = {_br(h_stat)}, {_pv(p_val)}; ε² = {_br(eps_sq, 4)}"
+
+                    num_comp = len(grupos_unicos) * (len(grupos_unicos) - 1) / 2
+                    for i in range(len(grupos_unicos)):
+                        for j in range(i + 1, len(grupos_unicos)):
+                            g1n, g2n = str(grupos_unicos[i]), str(grupos_unicos[j])
+                            d1, d2 = grupos_dados[i], grupos_dados[j]
+                            u_stat, p_pair = stats.mannwhitneyu(d1, d2, alternative='two-sided')
+                            n1, n2 = len(d1), len(d2)
+                            sigma_u = np.sqrt(n1 * n2 * (n1 + n2 + 1) / 12.0)
+                            z_val = (u_stat - (n1 * n2) / 2.0) / sigma_u if sigma_u > 0 else 0.0
+                            r_eff = abs(z_val) / np.sqrt(n1 + n2) if (n1 + n2) > 0 else 0.0
+                            p_adj = min(p_pair * num_comp, 1.0)
+                            posthoc_rows.append([f"{g1n} vs. {g2n}", f"Z = {_br(z_val)}", _pv(p_pair), _br(p_adj, 4), _br(r_eff, 3),
+                                                  "não estatisticamente significativo" if p_adj >= 0.05 else "estatisticamente significativo"])
+                else:
+                    f_stat, p_val = stats.f_oneway(*grupos_dados)
+                    comp_titulo = "ANOVA one-way (paramétrico)"
+                    comp_detalhe = f"F({len(grupos_unicos) - 1}, {sum(len(g) for g in grupos_dados) - len(grupos_unicos)}) = {_br(f_stat)}, {_pv(p_val)}"
+
+    # Demais análises registradas na sessão (dados/_analises_sessao.jsonl) — cada uma foi
+    # calculada e mostrada ao usuário durante a conversa; aqui apenas renderizamos, sem
+    # recalcular nada nem inventar conclusão.
+    secoes_extra = []
+    comandos_extra_unicos = []
+    for entrada in ler_manifesto():
+        comando = entrada.get('comando')
+        formatador = COMANDO_FORMATADORES.get(comando)
+        if not formatador:
+            continue
+        par = entrada.get('params', {})
+        if col_var and col_group and comando in _COMPARACAO_GRUPOS_COMANDOS:
+            if str(par.get('var', '')).strip().lower() == col_var.strip().lower() and \
+               str(par.get('group', '')).strip().lower() == col_group.strip().lower():
+                continue  # já coberto na comparação principal (seções 1-3)
+        try:
+            secao = formatador(entrada.get('resultado', {}), par)
+        except (KeyError, TypeError):
+            continue  # entrada malformada/incompleta não deve derrubar o relatório inteiro
+        secao['comando'] = comando
+        secao['resultado'] = entrada.get('resultado', {})
+        secao['params'] = par
+        secoes_extra.append(secao)
+        if comando not in comandos_extra_unicos:
+            comandos_extra_unicos.append(comando)
+
+    checklist_diretriz = None
+    if desenho_key:
+        flags_checklist = {
+            "tabela1": bool(tabela1_basais),
+            "correcao_multiplas": "correcao_multiplas" in comandos_extra_unicos,
+            "posthoc": bool(posthoc_rows),
+            "regressao_linear": "regressao_linear" in comandos_extra_unicos,
+            "regressao_logistica": "regressao_logistica" in comandos_extra_unicos,
+            "kaplan_meier": "kaplan_meier" in comandos_extra_unicos,
+        }
+        checklist_diretriz = montar_checklist_diretriz(desenho_key, flags_checklist)
 
     try:
         from reportlab.lib.pagesizes import A4
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.utils import ImageReader
         from reportlab.lib import colors
 
-        doc = SimpleDocTemplate(out_path, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
+        doc = SimpleDocTemplate(out_path, pagesize=A4, leftMargin=32, rightMargin=32, topMargin=32, bottomMargin=32)
         styles = getSampleStyleSheet()
 
-        title_style = ParagraphStyle('DocTitle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=18, leading=22, textColor=colors.HexColor('#1E3A8A'), spaceAfter=4)
-        subtitle_style = ParagraphStyle('DocSubtitle', parent=styles['Normal'], fontName='Helvetica', fontSize=10, leading=13, textColor=colors.HexColor('#4B5563'), spaceAfter=10)
-        h2_style = ParagraphStyle('SectionHeading', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=12, leading=15, textColor=colors.HexColor('#1E3A8A'), spaceBefore=8, spaceAfter=4)
-        body_style = ParagraphStyle('BodyTextCustom', parent=styles['Normal'], fontName='Helvetica', fontSize=9, leading=13, textColor=colors.HexColor('#1F2937'), spaceAfter=5)
-        th_style = ParagraphStyle('TableHeader', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=8, leading=10, textColor=colors.white, alignment=1)
-        tb_style = ParagraphStyle('TableCell', parent=styles['Normal'], fontName='Helvetica', fontSize=8, leading=10, textColor=colors.HexColor('#1F2937'), alignment=1)
+        title_style = ParagraphStyle('DocTitle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=17, leading=21, textColor=colors.HexColor('#0F172A'), spaceAfter=2)
+        subtitle_style = ParagraphStyle('DocSubtitle', parent=styles['Normal'], fontName='Helvetica', fontSize=9, leading=12, textColor=colors.HexColor('#475569'), spaceAfter=6)
+        meta_label = ParagraphStyle('MetaLabel', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=8, leading=10, textColor=colors.HexColor('#0F172A'))
+        meta_val = ParagraphStyle('MetaVal', parent=styles['Normal'], fontName='Helvetica', fontSize=8, leading=10, textColor=colors.HexColor('#334155'))
+        h2_style = ParagraphStyle('SectionHeading', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=11, leading=14, textColor=colors.HexColor('#0F172A'), spaceBefore=8, spaceAfter=4)
+        body_style = ParagraphStyle('BodyTextCustom', parent=styles['Normal'], fontName='Helvetica', fontSize=8.2, leading=11.5, textColor=colors.HexColor('#1E293B'), spaceAfter=4)
+        quote_style = ParagraphStyle('QuoteCustom', parent=styles['Normal'], fontName='Helvetica-Oblique', fontSize=8.2, leading=11.8, textColor=colors.HexColor('#0F172A'), backColor=colors.HexColor('#F8FAFC'), borderColor=colors.HexColor('#CBD5E1'), borderWidth=0.5, borderPadding=5, spaceBefore=3, spaceAfter=5)
+        th_style = ParagraphStyle('TableHeader', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=7.5, leading=9.5, textColor=colors.white, alignment=1)
+        tb_style = ParagraphStyle('TableCell', parent=styles['Normal'], fontName='Helvetica', fontSize=7.5, leading=9.5, textColor=colors.HexColor('#1E293B'), alignment=1)
 
         elements = []
-        elements.append(Paragraph("RELATÓRIO DE ANÁLISE ESTATÍSTICA", title_style))
-        elements.append(Paragraph(f"Desfecho: <b>{col_var}</b> | Arquivo de Origem: <i>{os.path.basename(real_path)}</i>", subtitle_style))
-        elements.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#2563EB'), spaceAfter=10))
+        sec_num = [1]  # lista para poder incrementar dentro dos helpers abaixo
 
-        elements.append(Paragraph("1. Estatísticas Descritivas da Amostra (Tabela 1)", h2_style))
-        t_data = [[Paragraph("Grupo", th_style), Paragraph("N", th_style), Paragraph("Média (IC 95%)", th_style), Paragraph("DP", th_style), Paragraph("Mediana", th_style), Paragraph("Mínimo", th_style), Paragraph("Máximo", th_style)]]
-        for r in desc_rows:
-            t_data.append([
-                Paragraph(r['grupo'], tb_style), Paragraph(str(r['n']), tb_style), Paragraph(r['media_ic'], tb_style),
-                Paragraph(r['sd'], tb_style), Paragraph(r['mediana'], tb_style), Paragraph(r['min'], tb_style), Paragraph(r['max'], tb_style)
-            ])
-        t1 = Table(t_data, colWidths=[70, 25, 165, 45, 50, 45, 45])
-        t1.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E3A8A')),
-            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F8FAFC')]),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-            ('TOPPADDING', (0,0), (-1,-1), 4),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 4),
-        ]))
-        elements.append(t1)
-        elements.append(Spacer(1, 8))
+        def titulo_secao(texto):
+            elements.append(Paragraph(f"{sec_num[0]}. {texto}", h2_style))
+            sec_num[0] += 1
 
-        elements.append(Paragraph("2. Verificação de Pressupostos e Testes de Hipótese", h2_style))
-        norm_text = "<b>Teste de Normalidade (Shapiro-Wilk):</b> " + "; ".join(norm_res) + "."
-        elements.append(Paragraph(norm_text, body_style))
-        elements.append(Paragraph(f"<b>{comp_titulo}:</b> {comp_detalhe}", body_style))
-
-        if posthoc_rows:
-            elements.append(Spacer(1, 3))
-            elements.append(Paragraph("<b>Comparações Paritárias Post-hoc (Dunn / Bonferroni):</b>", body_style))
-            ph_data = [[Paragraph("Comparação", th_style), Paragraph("Estatística", th_style), Paragraph("p-valor Ajustado", th_style), Paragraph("Resultado", th_style)]]
-            for pr in posthoc_rows:
-                ph_data.append([Paragraph(pr[0], tb_style), Paragraph(pr[1], tb_style), Paragraph(pr[2], tb_style), Paragraph(pr[3], tb_style)])
-            t_ph = Table(ph_data, colWidths=[130, 80, 100, 110])
-            t_ph.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2563EB')),
-                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F8FAFC')]),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-                ('TOPPADDING', (0,0), (-1,-1), 3),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+        def tabela_generica(headers, rows, col_widths=None):
+            t_headers = [Paragraph(str(h), th_style) for h in headers]
+            t_rows = [t_headers] + [[Paragraph(str(c), tb_style) for c in row] for row in rows]
+            if col_widths is None:
+                largura = 530 / len(headers)
+                col_widths = [largura] * len(headers)
+            t = Table(t_rows, colWidths=col_widths)
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#0F172A')),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F8FAFC')]),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E2E8F0')),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
             ]))
-            elements.append(t_ph)
+            elements.append(t)
 
-        elements.append(Spacer(1, 8))
-        elements.append(Paragraph("3. Texto de Métodos Estatísticos (Padrão Vancouver / ICMJE)", h2_style))
-        methods_p = f"As variáveis numéricas foram descritas por média, desvio-padrão, mediana, valores mínimo e máximo e intervalo de confiança de 95% (IC95%). A normalidade da distribuição das variáveis foi avaliada pelo teste de Shapiro-Wilk. Para a comparação da variável {col_var} entre os grupos ({', '.join(grupos_unicos)}), optou-se pelo {comp_titulo.lower()} devido à avaliação dos pressupostos. O nível de significância estatística adotado para todas as análises foi de 0,05. As análises foram calculadas deterministicamente utilizando ferramentas científicas em Python."
-        elements.append(Paragraph(methods_p, body_style))
+        def inserir_figura(fig, largura=340):
+            if fig is None:
+                return
+            try:
+                buf = io.BytesIO()
+                fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+                plt.close(fig)
+                buf.seek(0)
+                iw, ih = ImageReader(buf).getSize()
+                buf.seek(0)
+                elements.append(Image(buf, width=largura, height=largura * ih / iw))
+                elements.append(Spacer(1, 4))
+            except Exception:
+                plt.close(fig)  # nunca deixar uma figura com problema derrubar o relatório inteiro
+
+        elements.append(Paragraph("RELATÓRIO DE ANÁLISE ESTATÍSTICA", title_style))
+        elements.append(Paragraph("Seções de Métodos/Resultados no padrão ICMJE / Vancouver, montadas a partir dos resultados calculados durante a sessão", subtitle_style))
+        elements.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#1D4ED8'), spaceAfter=6))
+
+        meta_table_data = [
+            [Paragraph("Variável Alvo:", meta_label), Paragraph(col_var or "—", meta_val), Paragraph("Data da Análise:", meta_label), Paragraph(datetime.now().strftime('%d/%m/%Y'), meta_val)],
+            [Paragraph("Coluna de Grupo:", meta_label), Paragraph(col_group or "—", meta_val), Paragraph("Tamanho da Amostra:", meta_label), Paragraph(f"N = {len(df)}" + (f" ({len(grupos_unicos)} grupos)" if col_group else ""), meta_val)],
+            [Paragraph("Arquivo Fonte:", meta_label), Paragraph(os.path.basename(real_path), meta_val), Paragraph("Padrão Publicação:", meta_label), Paragraph("ICMJE / Vancouver", meta_val)]
+        ]
+        t_meta = Table(meta_table_data, colWidths=[85, 230, 85, 130])
+        t_meta.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F8FAFC')),
+            ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
+            ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor('#F1F5F9')),
+            ('TOPPADDING', (0,0), (-1,-1), 2.5),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 2.5),
+        ]))
+        elements.append(t_meta)
+        elements.append(Spacer(1, 6))
+
+        # Síntese objetiva — nada além do que os números realmente mostram (sem
+        # interpretação clínica e sem afirmação que os dados não sustentem).
+        bullets = []
+        if comp_titulo:
+            bullets.append(f"• <b>Comparação principal ({col_var} por {col_group}):</b> {comp_titulo} — {comp_detalhe}.")
+        if posthoc_rows:
+            n_sig = sum(1 for pr in posthoc_rows if pr[5] == "estatisticamente significativo")
+            bullets.append(f"• <b>Post-hoc:</b> {n_sig} de {len(posthoc_rows)} comparações pareadas foram estatisticamente significativas (ver tabela na seção de comparação de hipóteses).")
+        for secao in secoes_extra:
+            bullets.append(f"• <b>{secao['titulo']}:</b> {secao['narrativa']}")
+        if not bullets:
+            bullets.append("• Nenhuma análise foi registrada na sessão até o momento — rode os comandos do toolkit antes de gerar o relatório.")
+        resumo_texto = "<b>SÍNTESE OBJETIVA DOS ACHADOS:</b><br/>" + "<br/>".join(bullets)
+        t_summary = Table([[Paragraph(resumo_texto, body_style)]], colWidths=[530])
+        t_summary.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F0F9FF')),
+            ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#B9E6FE')),
+            ('TOPPADDING', (0,0), (-1,-1), 5),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+            ('LEFTPADDING', (0,0), (-1,-1), 7),
+            ('RIGHTPADDING', (0,0), (-1,-1), 7),
+        ]))
+        elements.append(t_summary)
+        elements.append(Spacer(1, 6))
+
+        metodos_clausulas = []
+
+        if tabela1_basais:
+            titulo_secao("Tabela 1 — Características Basais por Grupo")
+            tabela_generica(tabela1_basais["headers"], tabela1_basais["linhas"])
+            elements.append(Spacer(1, 4))
+            elements.append(Paragraph(
+                "Variáveis numéricas: média ± DP, comparadas por teste t/Welch/Mann-Whitney (2 grupos) ou ANOVA/Kruskal-Wallis "
+                "(3+ grupos), conforme normalidade (Shapiro-Wilk) e homogeneidade de variâncias (Levene). Categóricas: n (%), "
+                "comparadas por qui-quadrado ou Fisher exato (tabelas 2×2). p-valor apenas para checagem de balanceamento entre "
+                "os braços — não é o desfecho do estudo.",
+                body_style,
+            ))
+            elements.append(Spacer(1, 6))
+            metodos_clausulas.append(
+                "O balanceamento basal entre os grupos foi verificado por teste t/Mann-Whitney/ANOVA/Kruskal-Wallis "
+                "(variáveis numéricas) ou qui-quadrado/Fisher (categóricas)."
+            )
+
+        if desc_rows:
+            titulo_secao(f"Estatísticas Descritivas do Desfecho ({col_var})")
+            tabela_generica(
+                ["Grupo", "N", "Média (IC 95%)", "DP", "Mediana", "IQR (Q1 - Q3)", "Mín - Máx", "Assimetria"],
+                [[r['grupo'], r['n'], r['media_ic'], r['sd'], r['mediana'], r['iqr'], r['min_max'], r['skew']] for r in desc_rows],
+                col_widths=[60, 20, 135, 35, 45, 115, 60, 60],
+            )
+            elements.append(Spacer(1, 6))
+            if MATPLOTLIB_OK and len(grupos_unicos) >= 2:
+                inserir_figura(_fig_boxplot(grupos_dados, [str(g) for g in grupos_unicos], col_var))
+            metodos_clausulas.append(
+                "Variáveis numéricas foram descritas por média, desvio-padrão e IC95% (se normais) e por mediana e IQR (Q1-Q3) caso contrário."
+            )
+
+        if norm_res:
+            titulo_secao("Avaliação de Pressupostos Estatísticos")
+            norm_txt = "<b>Normalidade (Shapiro-Wilk):</b> " + "; ".join(norm_res) + ".<br/>"
+            if lev_pval is not None:
+                norm_txt += f"<b>Homogeneidade de variâncias (Levene):</b> F={_br(lev_stat)}, {_pv(lev_pval)} ({'variâncias homogêneas' if lev_pval >= 0.05 else 'variâncias heterogêneas'}).<br/>"
+            if comp_titulo:
+                norm_txt += (
+                    f"<b>Racional metodológico:</b> com base nesses resultados, a comparação de {col_var} entre os grupos "
+                    f"foi conduzida via {comp_titulo}."
+                )
+            elements.append(Paragraph(norm_txt, body_style))
+            elements.append(Spacer(1, 4))
+            if MATPLOTLIB_OK:
+                inserir_figura(_fig_qqplot(grupos_dados, [str(g) for g in grupos_unicos], col_var))
+            metodos_clausulas.append("A normalidade foi avaliada por Shapiro-Wilk e a homogeneidade de variâncias por Levene, definindo a rota paramétrica ou não paramétrica de cada comparação.")
+
+        if comp_titulo:
+            titulo_secao("Comparação de Hipóteses" + (" & Post-Hoc" if posthoc_rows else ""))
+            elements.append(Paragraph(f"<b>{comp_titulo}:</b> {comp_detalhe}", body_style))
+            if posthoc_rows:
+                elements.append(Spacer(1, 2))
+                tabela_generica(
+                    ["Comparação", "Estatística Z", "p-bruto", "p-ajustado", "Efeito (r)", "Conclusão"],
+                    posthoc_rows,
+                    col_widths=[120, 65, 60, 90, 85, 110],
+                )
+            elements.append(Spacer(1, 4))
+            metodos_clausulas.append(f"A comparação entre os {len(grupos_unicos)} grupos usou {comp_titulo}" + (", com post-hoc para localizar os pares divergentes" if posthoc_rows else "") + ".")
+
+        for secao in secoes_extra:
+            titulo_secao(secao['titulo'])
+            elements.append(Paragraph(secao['narrativa'], body_style))
+            if secao.get('tabela'):
+                elements.append(Spacer(1, 2))
+                headers, rows = secao['tabela']
+                tabela_generica(headers, rows)
+            elements.append(Spacer(1, 4))
+            if MATPLOTLIB_OK:
+                if secao['comando'] in ('regressao_linear', 'regressao_logistica'):
+                    inserir_figura(_fig_forest(
+                        secao['resultado'].get('coeficientes', []),
+                        usa_or=(secao['comando'] == 'regressao_logistica'),
+                        titulo=secao['titulo'],
+                    ))
+                elif secao['comando'] == 'kaplan_meier':
+                    inserir_figura(_fig_km(secao['resultado'], secao['params'].get('tempo', 'tempo')))
+
+        nomes_legiveis = {
+            'ttest_independente': 'teste t independente', 'ttest_pareado': 'teste t pareado',
+            'mannwhitney': 'Mann-Whitney U', 'wilcoxon': 'Wilcoxon pareado',
+            'anova_oneway': 'ANOVA one-way', 'kruskal': 'Kruskal-Wallis',
+            'qui_quadrado': 'qui-quadrado/Fisher', 'correlacao': 'correlação',
+            'regressao_linear': 'regressão linear múltipla', 'regressao_logistica': 'regressão logística binária',
+            'kaplan_meier': 'Kaplan-Meier com log-rank', 'correcao_multiplas': 'correção de múltiplas comparações',
+        }
+        if comandos_extra_unicos:
+            metodos_clausulas.append(
+                "Também foram realizadas, ao longo da sessão: " + ", ".join(nomes_legiveis.get(c, c) for c in comandos_extra_unicos) + "."
+            )
+
+        titulo_secao("Seção de Métodos (para colar no manuscrito)")
+        corpo_metodos = " ".join(metodos_clausulas) + " " if metodos_clausulas else ""
+        methods_p = f"<i>\"{corpo_metodos}Considerou-se estatisticamente significativo p < 0,05. Análises realizadas em Python (SciPy/pandas), via motor determinístico stats_toolkit.py.\"</i>"
+        elements.append(Paragraph(methods_p, quote_style))
+        elements.append(Spacer(1, 4))
+
+        if desc_rows and comp_titulo:
+            titulo_secao("Seção de Resultados (para colar no manuscrito)")
+            desc_txt = "; ".join(f"{r['grupo']} (n={r['n']}): média {r['media_ic']}, mediana {r['mediana']} (IQR {r['iqr']})" for r in desc_rows)
+            results_p = f"<i>\"Foram analisados {len(df)} participantes. Para a variável {col_var}, por grupo: {desc_txt}. {comp_titulo} indicou {comp_detalhe}."
+            if posthoc_rows:
+                pares_txt = "; ".join(f"{pr[0]} ({pr[1]}; {pr[3]}; {pr[5]})" for pr in posthoc_rows)
+                results_p += f" Nas comparações post-hoc: {pares_txt}."
+            results_p += "\"</i>"
+            elements.append(Paragraph(results_p, quote_style))
+
+        if checklist_diretriz:
+            titulo_secao(
+                f"Checklist de Aderência — {checklist_diretriz['nome']} "
+                "(uso interno do pesquisador, não é para colar no manuscrito)"
+            )
+            elements.append(Paragraph(
+                f"Desenho informado: {checklist_diretriz['descricao']}"
+                + (" (randomizado)." if desenho_key == "ensaio_clinico" and randomizado else
+                   " (não randomizado)." if desenho_key == "ensaio_clinico" else "."),
+                body_style,
+            ))
+            elements.append(Spacer(1, 2))
+            tabela_generica(
+                ["Item da diretriz", "Status", "Observação"],
+                checklist_diretriz["linhas"],
+                col_widths=[160, 130, 240],
+            )
+            elements.append(Spacer(1, 2))
+            elements.append(Paragraph(
+                "<i>Este relatório cobre apenas os itens estatísticos da diretriz. Itens marcados como "
+                "\"Fora do escopo\" dependem de informação que não está na planilha analisada (protocolo, "
+                "recrutamento, cegamento etc.) e precisam ser descritos pelo(a) pesquisador(a) no manuscrito "
+                "para que o artigo atenda à diretriz por completo.</i>",
+                body_style,
+            ))
 
         doc.build(elements)
     except Exception as pdf_err:
@@ -1423,18 +2438,35 @@ def cmd_gerar_pdf(args):
             pdf.cell(0, 10, "RELATORIO DE ANALISE ESTATISTICA", ln=True, align='C')
             pdf.ln(4)
             pdf.set_font("Arial", '', 9)
-            pdf.multi_cell(0, 5, f"Desfecho: {col_var}\nArquivo: {os.path.basename(real_path)}")
+            pdf.multi_cell(0, 5, f"Desfecho: {col_var or '-'}\nArquivo: {os.path.basename(real_path)}")
             pdf.ln(4)
-            pdf.set_font("Arial", 'B', 11)
-            pdf.cell(0, 8, "1. Estatisticas Descritivas", ln=True)
-            pdf.set_font("Arial", '', 9)
-            for r in desc_rows:
-                pdf.cell(0, 5, f"{r['grupo']} (N={r['n']}): Media={r['media_ic']}, DP={r['sd']}, Mediana={r['mediana']}", ln=True)
-            pdf.ln(4)
-            pdf.set_font("Arial", 'B', 11)
-            pdf.cell(0, 8, "2. Comparacao entre Grupos", ln=True)
-            pdf.set_font("Arial", '', 9)
-            pdf.cell(0, 5, comp_detalhe, ln=True)
+            if desc_rows:
+                pdf.set_font("Arial", 'B', 11)
+                pdf.cell(0, 8, "1. Estatisticas Descritivas", ln=True)
+                pdf.set_font("Arial", '', 9)
+                for r in desc_rows:
+                    pdf.cell(0, 5, f"{r['grupo']} (N={r['n']}): Media={r['media_ic']}, DP={r['sd']}, Mediana={r['mediana']}", ln=True)
+                pdf.ln(4)
+            if comp_titulo:
+                pdf.set_font("Arial", 'B', 11)
+                pdf.cell(0, 8, "2. Comparacao entre Grupos", ln=True)
+                pdf.set_font("Arial", '', 9)
+                pdf.multi_cell(0, 5, f"{comp_titulo}: {comp_detalhe}")
+                pdf.ln(2)
+            for secao in secoes_extra:
+                pdf.set_font("Arial", 'B', 11)
+                pdf.multi_cell(0, 8, secao['titulo'])
+                pdf.set_font("Arial", '', 9)
+                pdf.multi_cell(0, 5, secao['narrativa'].encode('latin-1', 'replace').decode('latin-1'))
+                pdf.ln(2)
+            if checklist_diretriz:
+                pdf.set_font("Arial", 'B', 11)
+                pdf.multi_cell(0, 8, f"Checklist de Aderencia - {checklist_diretriz['nome']}".encode('latin-1', 'replace').decode('latin-1'))
+                pdf.set_font("Arial", '', 9)
+                for item, status, obs in checklist_diretriz["linhas"]:
+                    linha = f"[{status}] {item} - {obs}".encode('latin-1', 'replace').decode('latin-1')
+                    pdf.multi_cell(0, 5, linha)
+                pdf.ln(2)
             pdf.output(out_path)
         except Exception as fpdf_err:
             erro(f"Falha ao gerar PDF: {pdf_err} | {fpdf_err}")
@@ -1471,8 +2503,13 @@ def main():
 
     p = sub.add_parser("gerar_pdf")
     add_input_args(p)
-    p.add_argument("--var", default="Variacao_PAS")
-    p.add_argument("--group", default="Grupo_Tratamento")
+    p.add_argument("--var", default=None, help="Variável numérica da comparação principal (opcional)")
+    p.add_argument("--group", default=None, help="Coluna de grupo da comparação principal (opcional)")
+    p.add_argument("--baseline_vars", default=None, help="Colunas de características basais para a Tabela 1, separadas por vírgula (opcional)")
+    p.add_argument("--desenho", default=None,
+                    help="Desenho do estudo para o checklist de diretriz de relato (opcional): "
+                         "ensaio_clinico (CONSORT) | coorte | caso_controle | transversal (STROBE) | diagnostico_preditivo (TRIPOD)")
+    p.add_argument("--randomizado", action="store_true", help="Marca o ensaio clínico como randomizado (só afeta o texto do checklist)")
     p.add_argument("--out", default="Relatorio_Estatistico_Premium.pdf")
     p.set_defaults(func=cmd_gerar_pdf)
 
@@ -1576,6 +2613,9 @@ def main():
     p.add_argument("--metodo", default="fdr_bh", choices=["bonferroni", "fdr_bh"])
     p.set_defaults(func=cmd_correcao_multiplas)
 
+    p = sub.add_parser("resetar_sessao", help="Apaga o histórico de análises da sessão (dados/_analises_sessao.jsonl)")
+    p.set_defaults(func=cmd_resetar_sessao)
+
     # Se o argumento for um arquivo JSON, converte para flags CLI de argparse
     if len(sys.argv) > 1 and sys.argv[1].endswith('.json'):
         try:
@@ -1666,6 +2706,8 @@ def main():
             erro(f"Erro ao processar arquivo JSON de argumentos: {e}")
 
     args, _ = parser.parse_known_args()
+    _SESSAO_CTX["comando"] = args.comando
+    _SESSAO_CTX["args"] = args
     try:
         args.func(args)
     except Exception as ex:

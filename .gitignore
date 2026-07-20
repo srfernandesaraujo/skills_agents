@@ -9,3 +9,6 @@ skills/.memory/
 .memory/
 firebase-service-account.json
 conversations/
+__pycache__/
+*.pyc
+.pytest_cache/
