@@ -502,7 +502,7 @@ app.get('/api/skills/:name/file', async (req, res) => {
   }
 });
 
-// 3b. Rota para servir arquivos de mídia diretamente (ex: preview de imagem)
+// 3b. Rota para servir arquivos de mídia e protótipos diretamente (ex: HTML animado, imagem, PDF)
 app.get('/api/skills/:name/media', async (req, res) => {
   const { name } = req.params;
   const filePath = req.query.path;
@@ -512,12 +512,15 @@ app.get('/api/skills/:name/media', async (req, res) => {
   }
 
   try {
-    // Extrai o nome do arquivo a partir do caminho para o Content-Disposition
     const fileName = path.basename(filePath);
     const ext = path.extname(fileName).toLowerCase();
     
-    // Mapeia extensões comuns para MIME types
     const mimeMap = {
+      '.html': 'text/html; charset=utf-8',
+      '.htm': 'text/html; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.js': 'application/javascript; charset=utf-8',
+      '.svg': 'image/svg+xml',
       '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       '.xls': 'application/vnd.ms-excel',
       '.pdf': 'application/pdf',
@@ -529,32 +532,62 @@ app.get('/api/skills/:name/media', async (req, res) => {
       '.zip': 'application/zip',
       '.csv': 'text/csv',
       '.json': 'application/json',
-      '.txt': 'text/plain',
+      '.txt': 'text/plain; charset=utf-8',
     };
 
+    let buffer = null;
     if (storage.useFirebase) {
-      const buffer = await storage.downloadBinaryFile(name, filePath);
-      if (!buffer) {
-        return res.status(404).json({ error: 'Arquivo não encontrado no Storage' });
-      }
-      const contentType = mimeMap[ext] || 'application/octet-stream';
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
-      res.setHeader('Content-Length', buffer.length);
-      res.send(buffer);
+      buffer = await storage.downloadBinaryFile(name, filePath);
     } else {
       const fullPath = safePath(path.join(SKILLS_DIR, name), filePath);
-      if (!fs.existsSync(fullPath)) {
-        return res.status(404).json({ error: 'Arquivo não encontrado' });
+      if (fs.existsSync(fullPath)) {
+        buffer = fs.readFileSync(fullPath);
       }
-      const contentType = mimeMap[ext] || 'application/octet-stream';
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
-      res.sendFile(fullPath);
     }
+
+    // Fallback de resgate: Se o arquivo não foi encontrado no Storage (ex: a IA gerou o código no chat sem rodar script),
+    // tenta recuperar o protótipo HTML gerado nas mensagens da conversa e salvar no Storage.
+    if (!buffer && (ext === '.html' || ext === '.htm' || ext === '.txt' || ext === '.js' || ext === '.css')) {
+      try {
+        console.log(`[MEDIA FALLBACK] Buscando protótipo HTML gerado em conversas para ${name}:${filePath}...`);
+        const convList = await storage.listConversations(req.user?.uid || 'system');
+        for (const conv of (convList || []).slice(0, 15)) {
+          const fullConv = await storage.getConversation(conv.id, req.user?.uid || 'system');
+          if (fullConv && fullConv.messages) {
+            for (const msg of [...fullConv.messages].reverse()) {
+              if (msg.role === 'assistant' && msg.content) {
+                const codeMatch = msg.content.match(/```(?:html|xml)?\s*([\s\S]*?)```/i);
+                if (codeMatch && codeMatch[1] && (codeMatch[1].includes('<html') || codeMatch[1].includes('<!DOCTYPE') || codeMatch[1].includes('<div'))) {
+                  const htmlCode = codeMatch[1].trim();
+                  await storage.saveFile(name, filePath, htmlCode);
+                  buffer = Buffer.from(htmlCode, 'utf8');
+                  console.log(`[MEDIA FALLBACK] Protótipo '${filePath}' recuperado das mensagens e salvo no Storage!`);
+                  break;
+                }
+              }
+            }
+          }
+          if (buffer) break;
+        }
+      } catch (fallbackErr) {
+        console.error('[MEDIA FALLBACK] Erro ao tentar resgatar arquivo de conversa:', fallbackErr);
+      }
+    }
+
+    if (!buffer) {
+      return res.status(404).json({ error: 'Arquivo não encontrado no Storage' });
+    }
+
+    const contentType = mimeMap[ext] || 'application/octet-stream';
+    const inlineTypes = ['.html', '.htm', '.svg', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.txt'];
+    const dispositionType = inlineTypes.includes(ext) ? 'inline' : 'attachment';
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `${dispositionType}; filename="${encodeURIComponent(fileName)}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
   } catch (error) {
-    console.error('[MEDIA DOWNLOAD ERROR]', error);
-    res.status(500).json({ error: 'Erro ao servir arquivo de mídia: ' + error.message });
+    res.status(500).json({ error: 'Erro ao ler arquivo: ' + error.message });
   }
 });
 
@@ -2359,8 +2392,29 @@ INSTRUÇÕES PÓS-EXECUÇÃO:
     }
 
 
-    // --- ETAPA AUTO-INGESTÃO: Salva novas preferências dinamicamente no final ---
+    // --- AUTO-SALVAMENTO DE PROTÓTIPOS E ARQUIVOS GERADOS VIA MARKDOWN ---
     if (finalReply) {
+      try {
+        const linkRegex = /\[(?:[^\]]+)\]\(\/api\/skills\/([^\/]+)\/media\?path=([^)]+)\)/gi;
+        const codeBlockRegex = /```(?:html|xml)?\s*([\s\S]*?)```/gi;
+        let linkMatch;
+        while ((linkMatch = linkRegex.exec(finalReply)) !== null) {
+          const targetSkill = linkMatch[1];
+          const targetPath = decodeURIComponent(linkMatch[2]);
+
+          codeBlockRegex.lastIndex = 0;
+          const codeMatch = codeBlockRegex.exec(finalReply);
+          if (codeMatch && codeMatch[1] && (codeMatch[1].includes('<html') || codeMatch[1].includes('<!DOCTYPE') || codeMatch[1].includes('<div'))) {
+            const htmlContent = codeMatch[1].trim();
+            console.log(`[AUTO-SAVE MEDIA] Salvando protótipo em ${targetSkill}:${targetPath}...`);
+            await storage.saveFile(targetSkill, targetPath, htmlContent);
+            steps.push({ step: 'file_saved', detail: `Protótipo '${targetPath}' salvo no Storage.` });
+          }
+        }
+      } catch (autoSaveErr) {
+        console.error('[AUTO-SAVE MEDIA] Erro ao auto-salvar protótipo:', autoSaveErr);
+      }
+
       await autoIngestMemory(lastUserMessage || 'Analise o arquivo.', finalReply, skillToUse, actualApiKey, steps);
     }
 
