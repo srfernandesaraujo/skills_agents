@@ -1949,6 +1949,8 @@ Se nenhuma skill se aplicar ao pedido do usuário, responda com needsSkill: fals
       matchedMemoriesPrompt = `\n\n=== HISTÓRICO E PREFERÊNCIAS APRENDIDAS (Recuperado do Banco Vetorial) ===\nSiga rigorosamente estas preferências de comportamento aprendidas para este grupo de Skills:${matchedMemoriesPrompt}\n=== FIM DAS PREFERÊNCIAS ===`;
     }
 
+    const skillConfig = parsePlaybookFrontmatter(playbookContent);
+
     steps.push({ 
       step: 'load_skill', 
       detail: selectedSkillList.length > 1 
@@ -1972,8 +1974,9 @@ Scripts de automação disponíveis na pasta /tools: ${JSON.stringify(toolsScrip
 ATENÇÃO CRÍTICA: Os ÚNICOS scripts de automação válidos são os listados acima (${JSON.stringify(toolsScripts)}). NUNCA tente chamar scripts inexistentes como docx.py, report.py ou relatorio.py. Para gerar relatórios ou pareceres finais, apresente a análise formatada diretamente em texto Markdown para o usuário.
 
 Instruções de Resposta:
-1. Raciocínio Oculto (Chain of Thought): Você DEVE sempre iniciar sua resposta abrindo a tag <thought_process> e descrever nela todo o seu raciocínio, análises e tomadas de decisão (que também devem ser preferencialmente conduzidos em Português). Após concluir seu raciocínio, feche obrigatoriamente a tag com </thought_process> e então depois forneça a resposta ou pergunta ao usuário. Nunca misture o raciocínio com a resposta externa e nunca escreva a palavra "thought_process" solta fora das tags XML.
-2. REGRA DE SILÊNCIO TÉCNICO (CRÍTICO): NUNCA exiba explicações sobre o fluxo de trabalho (Playbook), etapas internas, regras ou nomes de scripts/comandos fora das tags <thought_process>. O usuário NUNCA deve ver metatexto como "Meu fluxo de trabalho indica...", "A Etapa 2 é...", "O comando para explorar os dados é...". Forneça APENAS a fala/pergunta direta ao usuário ou a chamada exclusiva da ferramenta em JSON.
+1. Raciocínio Oculto (Chain of Thought): Você DEVE obrigatoriamente iniciar TODA E QUALQUER resposta abrindo a tag <thought_process> e encerrando com </thought_process>. Nela, descreva todo o seu raciocínio, planejamento de etapas e tomada de decisão. NUNCA gere texto fora das tags <thought_process> que seja raciocínio interno.
+2. REGRA DE SILÊNCIO TÉCNICO (CRÍTICO): NUNCA exiba explicações sobre o fluxo de trabalho (Playbook), etapas internas, regras ou nomes de scripts/comandos fora das tags <thought_process>. O usuário NUNCA deve ver metatexto como "Meu fluxo de trabalho indica...", "O usuário quer...", "Esta é a Etapa 1...", "Vou começar pelas perguntas...". Forneça APENAS a fala/pergunta direta ao usuário ou a chamada exclusiva da ferramenta em JSON.
+3. Não tente usar ferramentas ou scripts fictícios que não estejam listados expressamente na lista acima. Se precisar fazer perguntas ao usuário, faça-as em texto corrido e amigável.
 3. Você deve analisar a conversa e guiar o usuário de acordo com o "Roteiro de Perguntas" do Playbook. Não entregue a resposta final até ter coletado todos os dados do roteiro.
 4. CHAMADA DE FERRAMENTA (CRÍTICO): Se você precisar rodar um dos scripts de automação (da lista de scripts acima) para obter dados ou realizar cálculos, sua resposta INTEIRA (após o </thought_process>) DEVE ser EXCLUSIVAMENTE o JSON abaixo, sem NENHUM texto antes, depois ou ao redor dele:
 {
@@ -2063,6 +2066,17 @@ Quando você retornar esse JSON, o sistema executará o script localmente e inje
           cleaned = '';
         }
       }
+
+      // Fallback de segurança: Se a IA não usou <thought_process>, mas iniciou a mensagem com metatexto de raciocínio interno
+      if (!thoughtMatch && !thought) {
+        const metaRegex = /^((?:O usuário quer|Esta é a Etapa|Já tenho o tema|Vou começar|Analise de etapa)[\s\S]*?)(?=(?:\n\n[A-Z0-9\*\-]|ask_user_input|$))/i;
+        const metaMatch = replyText.match(metaRegex);
+        if (metaMatch && metaMatch[1]) {
+          thought = metaMatch[1].trim();
+          cleaned = replyText.substring(metaMatch[1].length).trim();
+        }
+      }
+
       return { thought, cleaned };
     };
 
