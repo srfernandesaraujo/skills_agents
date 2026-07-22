@@ -1976,8 +1976,9 @@ ATENÇÃO CRÍTICA: Os ÚNICOS scripts de automação válidos são os listados 
 Instruções de Resposta:
 1. Raciocínio Oculto (Chain of Thought): Você DEVE obrigatoriamente iniciar TODA E QUALQUER resposta abrindo a tag <thought_process> e encerrando com </thought_process>. Nela, descreva todo o seu raciocínio, planejamento de etapas e tomada de decisão. NUNCA gere texto fora das tags <thought_process> que seja raciocínio interno.
 2. RESPOSTA AO USUÁRIO OBRIGATÓRIA: Toda resposta DEVE conter o raciocínio dentro de <thought_process>...</thought_process> E, em seguida, APÓS o </thought_process>, a sua mensagem/pergunta visível para o usuário em Português (pt-BR). NUNCA envie apenas a tag de pensamento sem a mensagem/pergunta final para o usuário.
-3. REGRA DE SILÊNCIO TÉCNICO (CRÍTICO): NUNCA exiba explicações sobre o fluxo de trabalho (Playbook), etapas internas, regras ou nomes de scripts/comandos fora das tags <thought_process>. O usuário NUNCA deve ver metatexto como "Meu fluxo de trabalho indica...", "O usuário quer...", "Esta é a Etapa 1...", "De acordo com o playbook...", "Vou começar pelas perguntas...". Forneça APENAS a fala/pergunta direta ao usuário ou a chamada exclusiva da ferramenta em JSON.
-4. Não tente usar ferramentas ou scripts fictícios que não estejam listados expressamente na lista acima. Se precisar fazer perguntas ao usuário, faça-as em texto corrido e amigável.
+3. ATENÇÃO AOS DADOS JÁ FORNECIDOS (CRÍTICO): Leia com extrema atenção o HISTÓRICO DA CONVERSA! Se o usuário já respondeu a uma pergunta (como objetivo, tema, público-alvo, etc.), NUNCA repita a mesma pergunta nas mensagens seguintes. Confirme o que foi fornecido e avance para os próximos passos ou elabore o roteiro imediatamente.
+4. REGRA DE SILÊNCIO TÉCNICO (CRÍTICO): NUNCA exiba explicações sobre o fluxo de trabalho (Playbook), etapas internas, regras ou nomes de scripts/comandos fora das tags <thought_process>. O usuário NUNCA deve ver metatexto como "Meu fluxo de trabalho indica...", "O usuário quer...", "Esta é a Etapa 1...", "De acordo com o playbook...", "Vou começar pelas perguntas...". Forneça APENAS a fala/pergunta direta ao usuário ou a chamada exclusiva da ferramenta em JSON.
+5. Não tente usar ferramentas ou scripts fictícios que não estejam listados expressamente na lista acima. Se precisar fazer perguntas ao usuário, faça-as em texto corrido e amigável.
 3. Você deve analisar a conversa e guiar o usuário de acordo com o "Roteiro de Perguntas" do Playbook. Não entregue a resposta final até ter coletado todos os dados do roteiro.
 4. CHAMADA DE FERRAMENTA (CRÍTICO): Se você precisar rodar um dos scripts de automação (da lista de scripts acima) para obter dados ou realizar cálculos, sua resposta INTEIRA (após o </thought_process>) DEVE ser EXCLUSIVAMENTE o JSON abaixo, sem NENHUM texto antes, depois ou ao redor dele:
 {
@@ -2344,7 +2345,17 @@ INSTRUÇÕES PÓS-EXECUÇÃO:
     }
 
     if (!finalReply || !finalReply.trim()) {
-      finalReply = 'Olá! Para darmos início, por favor me informe o tema principal, o objetivo e o público-alvo do seu Reels!';
+      if (trace.thoughtProcess) {
+        // Tenta resgatar frases de diálogo/pergunta presentes no pensamento que não sejam metatexto
+        const lines = trace.thoughtProcess.split('\n');
+        const cleanLines = lines.filter(l => !l.trim().match(/^(?:<thought_process>|<\/thought_process>|O usuário quer|De acordo com|Esta é a Etapa|Já tenho|Preciso coletar|Vou começar|Vou fazer|Analise)/i));
+        if (cleanLines.length > 0) {
+          finalReply = cleanLines.join('\n').trim();
+        }
+      }
+      if (!finalReply || !finalReply.trim()) {
+        finalReply = 'Entendi perfeitamente as informações fornecidas! Vamos seguir em frente com a elaboração do seu roteiro?';
+      }
     }
 
 
