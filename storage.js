@@ -343,53 +343,126 @@ function getToolsReadme(title, folderName, desc) {
 
 // --- FUNÇÕES DE ARMAZENAMENTO DE SKILLS ---
 
-export async function listSkills() {
-  if (useFirebase && db) {
-    const snapshot = await db.collection('skills').get();
-    const skills = [];
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      skills.push({
-        name: doc.id,
-        title: data.title || doc.id,
-        description: data.description || '',
-        path: doc.id,
-        accepts_files: data.accepts_files || false,
-        supported_formats: data.supported_formats || ["pdf", "image"],
-        trigger: data.trigger || null,
-        cron_expression: data.cron_expression || null,
-        webhook_endpoint: data.webhook_endpoint || null
-      });
-    });
-    return skills;
-  } else {
-    // Local
-    const items = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
-    const skills = [];
-    for (const item of items) {
-      if (item.name === '.git' || !item.isDirectory() || item.name === '.memory') continue;
+export async function syncLocalSkillToFirebase(skillName) {
+  if (!useFirebase || !db) return;
+  const skillPath = path.join(SKILLS_DIR, skillName);
+  if (!fs.existsSync(skillPath)) return;
+
+  const skillMdPath = path.join(skillPath, 'skill.md');
+  let content = '';
+  if (fs.existsSync(skillMdPath)) {
+    content = fs.readFileSync(skillMdPath, 'utf8');
+  }
+  const meta = parseSkillMetadataFromContent(skillName, content);
+
+  const skillRef = db.collection('skills').doc(skillName);
+  await skillRef.set({
+    title: meta.title || skillName,
+    description: meta.description || '',
+    accepts_files: meta.accepts_files || false,
+    supported_formats: meta.supported_formats || ["pdf", "image"],
+    trigger: meta.trigger || null,
+    cron_expression: meta.cron_expression || null,
+    webhook_endpoint: meta.webhook_endpoint || null,
+    createdAt: new Date().toISOString()
+  });
+
+  const uploadDirRecursive = async (currentDir, relativePrefix = '') => {
+    const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === '.git' || entry.name === '.memory') continue;
+      const fullPath = path.join(currentDir, entry.name);
+      const relPath = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
       
-      const skillPath = path.join(SKILLS_DIR, item.name);
-      const skillMdPath = path.join(skillPath, 'skill.md');
-      let content = '';
-      if (fs.existsSync(skillMdPath)) {
-        content = fs.readFileSync(skillMdPath, 'utf8');
+      if (entry.isDirectory()) {
+        await uploadDirRecursive(fullPath, relPath);
+      } else {
+        const fileContent = fs.readFileSync(fullPath, 'utf8');
+        await saveFile(skillName, relPath, fileContent);
       }
-      const meta = parseSkillMetadataFromContent(item.name, content);
-      skills.push({
-        name: item.name,
-        ...meta,
-        path: item.name
-      });
     }
-    return skills;
+  };
+
+  await uploadDirRecursive(skillPath);
+}
+
+export async function listSkills() {
+  const localItems = fs.existsSync(SKILLS_DIR) 
+    ? fs.readdirSync(SKILLS_DIR, { withFileTypes: true }) 
+    : [];
+  
+  const localSkills = [];
+  for (const item of localItems) {
+    if (item.name === '.git' || !item.isDirectory() || item.name === '.memory') continue;
+    const skillPath = path.join(SKILLS_DIR, item.name);
+    const skillMdPath = path.join(skillPath, 'skill.md');
+    let content = '';
+    if (fs.existsSync(skillMdPath)) {
+      content = fs.readFileSync(skillMdPath, 'utf8');
+    }
+    const meta = parseSkillMetadataFromContent(item.name, content);
+    localSkills.push({
+      name: item.name,
+      ...meta,
+      path: item.name
+    });
+  }
+
+  if (useFirebase && db) {
+    try {
+      const snapshot = await db.collection('skills').get();
+      const fbSkillsMap = new Map();
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        fbSkillsMap.set(doc.id, {
+          name: doc.id,
+          title: data.title || doc.id,
+          description: data.description || '',
+          path: doc.id,
+          accepts_files: data.accepts_files || false,
+          supported_formats: data.supported_formats || ["pdf", "image"],
+          trigger: data.trigger || null,
+          cron_expression: data.cron_expression || null,
+          webhook_endpoint: data.webhook_endpoint || null
+        });
+      });
+
+      // Se existir alguma skill no disco local que ainda não está no Firebase, sincroniza
+      for (const locSkill of localSkills) {
+        if (!fbSkillsMap.has(locSkill.name)) {
+          console.log(`[SYNC DISK -> FIREBASE] Sincronizando skill local '${locSkill.name}' para o Firebase...`);
+          try {
+            await syncLocalSkillToFirebase(locSkill.name);
+            fbSkillsMap.set(locSkill.name, locSkill);
+          } catch (syncErr) {
+            console.error(`Erro ao sincronizar '${locSkill.name}' para Firebase:`, syncErr);
+            fbSkillsMap.set(locSkill.name, locSkill);
+          }
+        }
+      }
+
+      return Array.from(fbSkillsMap.values());
+    } catch (err) {
+      console.error('Erro ao ler skills do Firebase. Retornando locais:', err);
+      return localSkills;
+    }
+  } else {
+    return localSkills;
   }
 }
+
 
 export async function getSkill(name) {
   if (useFirebase && db) {
     const docRef = db.collection('skills').doc(name);
-    const doc = await docRef.get();
+    let doc = await docRef.get();
+    if (!doc.exists) {
+      const localPath = path.join(SKILLS_DIR, name);
+      if (fs.existsSync(localPath)) {
+        await syncLocalSkillToFirebase(name);
+        doc = await docRef.get();
+      }
+    }
     if (!doc.exists) {
       throw new Error('Skill não encontrada no Firebase');
     }
@@ -541,6 +614,17 @@ export async function getFileContent(name, filePath) {
     }
 
     if (!doc.exists) {
+      const fullPath = safePath(path.join(SKILLS_DIR, name), filePath);
+      if (fs.existsSync(fullPath)) {
+        const fileContent = fs.readFileSync(fullPath, 'utf8');
+        return {
+          path: filePath,
+          content: fileContent,
+          isBinary: false,
+          size: fileContent.length,
+          mimeType: 'text/plain'
+        };
+      }
       throw new Error(`Arquivo não encontrado no Firebase: ${filePath}`);
     }
 
