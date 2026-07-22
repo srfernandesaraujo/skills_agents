@@ -1644,7 +1644,7 @@ async function syncSandboxFilesToFirebase(skillName, sandboxDir) {
 
 app.post('/api/agent/chat', authMiddleware, async (req, res) => {
   const startTime = performance.now();
-  const { messages, activeSkillName, apiKey, fileData, fileMime, fileName, conversationId, useDockerSandbox } = req.body;
+  const { messages, activeSkillName, activeSkillNames, apiKey, fileData, fileMime, fileName, conversationId, useDockerSandbox } = req.body;
 
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: 'Mensagens são obrigatórias.' });
@@ -1652,7 +1652,6 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
 
   const userId = req.user.uid;
   const activeConversationId = conversationId || 'chat_' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-
 
   const actualApiKey = apiKey || process.env.GEMINI_API_KEY || await getLastApiKey();
   if (actualApiKey) {
@@ -1671,8 +1670,18 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
   let totalCompletionTokens = 0;
   let totalTokensCount = 0;
 
+  // Suporte a seleção simples de Skill ou Perfil Multi-Skills (array)
+  let selectedSkillList = [];
+  if (Array.isArray(activeSkillNames) && activeSkillNames.length > 0) {
+    selectedSkillList = activeSkillNames;
+  } else if (typeof activeSkillNames === 'string' && activeSkillNames.trim()) {
+    selectedSkillList = activeSkillNames.split(',').map(s => s.trim()).filter(Boolean);
+  } else if (activeSkillName) {
+    selectedSkillList = activeSkillName.split(',').map(s => s.trim()).filter(Boolean);
+  }
+
   const trace = {
-    skillName: activeSkillName || null,
+    skillName: selectedSkillList.length > 0 ? selectedSkillList.join(', ') : null,
     routingReason: null,
     memories: [],
     files: [],
@@ -1697,7 +1706,7 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
   }
 
   const lastUserMessage = messages[messages.length - 1]?.content || '';
-  let skillToUse = activeSkillName;
+  let skillToUse = selectedSkillList.length > 0 ? selectedSkillList.join(',') : null;
   let steps = [];
 
   // Fase 1: Roteamento Dinâmico (se nenhuma skill estiver ativa)
@@ -1752,6 +1761,7 @@ Se nenhuma skill se aplicar ao pedido do usuário, responda com needsSkill: fals
             const exists = availableSkills.some(s => s.name === routeResult.skillName);
             if (exists) {
               skillToUse = routeResult.skillName;
+              selectedSkillList = [skillToUse];
               trace.skillName = skillToUse;
               const skillTitle = availableSkills.find(s => s.name === skillToUse)?.title || skillToUse;
               steps.push({ step: 'load_skill', detail: `Skill '${skillTitle}' carregada no contexto.` });
@@ -1813,7 +1823,7 @@ Se nenhuma skill se aplicar ao pedido do usuário, responda com needsSkill: fals
       
       let thoughtProcess = '';
       const thoughtRegex = /<thought_process>([\s\S]*?)<\/thought_process>/i;
-    const thoughtMatch = replyText.match(thoughtRegex);
+      const thoughtMatch = replyText.match(thoughtRegex);
       if (thoughtMatch) {
         thoughtProcess = thoughtMatch[1].trim();
         trace.thoughtProcess = thoughtProcess;
@@ -1847,93 +1857,105 @@ Se nenhuma skill se aplicar ao pedido do usuário, responda com needsSkill: fals
     }
   }
 
-  // --- EXECUÇÃO COM SKILL ATIVA ---
+  // --- EXECUÇÃO COM SKILL(S) ATIVA(S) ---
   try {
-    // Se o usuário anexou um arquivo no chat, salva-o automaticamente na pasta dados/ da Skill
+    const firstSkill = selectedSkillList[0] || skillToUse;
+    // Se o usuário anexou um arquivo no chat, salva-o na pasta dados/ da primeira Skill da lista
     if (fileData && fileName) {
       try {
         const fileBuffer = Buffer.from(fileData, 'base64');
         const mimeToUse = fileMime || 'application/octet-stream';
-        console.log(`[FILE ATTACH] Salvando arquivo anexado ${fileName} em dados/ para a skill ${skillToUse}...`);
-        await storage.saveBinaryFile(skillToUse, `dados/${fileName}`, fileBuffer, mimeToUse);
+        console.log(`[FILE ATTACH] Salvando arquivo anexado ${fileName} em dados/ para a skill ${firstSkill}...`);
+        await storage.saveBinaryFile(firstSkill, `dados/${fileName}`, fileBuffer, mimeToUse);
         steps.push({ step: 'file_saved', detail: `Arquivo '${fileName}' salvo na pasta dados/ da Skill.` });
       } catch (saveErr) {
-        console.error(`Erro ao salvar arquivo anexado na Skill ${skillToUse}:`, saveErr);
+        console.error(`Erro ao salvar arquivo anexado na Skill ${firstSkill}:`, saveErr);
         steps.push({ step: 'error', detail: `Falha ao salvar anexo: ${saveErr.message}` });
       }
     }
 
     let playbookContent = '';
-    try {
-      const file = await storage.getFileContent(skillToUse, 'skill.md');
-      playbookContent = file.content || '';
-    } catch (playbookErr) {
-      console.warn('Playbook não encontrado no chat do agente:', playbookErr);
-    }
-
-    const skillConfig = parsePlaybookFrontmatter(playbookContent);
-
-    // --- ETAPA RAG: Busca semântica por preferências anteriores ---
     let matchedMemoriesPrompt = '';
-    try {
-      let matched = [];
-      if (storage.useFirebase) {
-        const queryEmbedding = await getGeminiEmbedding(lastUserMessage || 'Analise o arquivo.', actualApiKey);
-        const memoriesList = await storage.getMemories(skillToUse);
-        if (memoriesList && memoriesList.length > 0) {
-          matched = searchMemoriesInList(memoriesList, queryEmbedding, 3, 0.45);
-        }
-      } else {
-        const skillMemories = vectorDB.getMemories(skillToUse);
-        if (skillMemories && skillMemories.length > 0) {
-          const queryEmbedding = await getGeminiEmbedding(lastUserMessage || 'Analise o arquivo.', actualApiKey);
-          matched = vectorDB.search(skillToUse, queryEmbedding, 3, 0.45);
-        }
-      }
-      
-      if (matched && matched.length > 0) {
-        trace.memories = matched.map(m => m.text);
-        steps.push({ step: 'rag_retrieved', detail: `Resgatou ${matched.length} preferências do contexto.` });
-        matchedMemoriesPrompt = `\n\n=== HISTÓRICO E PREFERÊNCIAS APRENDIDAS (Recuperado do Banco Vetorial) ===
-Siga rigorosamente estas preferências de comportamento e regras conceituais aprendidas em conversas anteriores com o usuário para esta Skill:
-${matched.map(m => `- ${m.text}`).join('\n')}
-=== FIM DAS PREFERÊNCIAS APRENDIDAS ===`;
-      }
-    } catch (ragErr) {
-      console.error('Erro ao realizar busca RAG:', ragErr);
-    }
-
-    // Lê os arquivos da pasta dados/ e scripts da pasta tools/
     let dadosFiles = [];
     let toolsScripts = [];
-    
-    if (storage.useFirebase) {
-      const details = await storage.getSkill(skillToUse);
-      const findFilesRecursive = (nodes) => {
-        const list = [];
-        for (const node of nodes) {
-          if (node.type === 'file') {
-            list.push(node.path);
-          } else if (node.children) {
-            list.push(...findFilesRecursive(node.children));
+
+    // Compila os playbooks, RAG, arquivos e scripts de TODAS as skills selecionadas
+    for (const singleSkill of selectedSkillList) {
+      try {
+        const file = await storage.getFileContent(singleSkill, 'skill.md');
+        if (file.content) {
+          playbookContent += `\n\n=== INÍCIO DO PLAYBOOK DA SKILL: "${singleSkill}" ===\n${file.content}\n=== FIM DO PLAYBOOK "${singleSkill}" ===\n`;
+        }
+      } catch (playbookErr) {
+        console.warn(`Playbook da skill '${singleSkill}' não encontrado:`, playbookErr);
+      }
+
+      // RAG por skill
+      try {
+        let matched = [];
+        if (storage.useFirebase) {
+          const queryEmbedding = await getGeminiEmbedding(lastUserMessage || 'Analise o arquivo.', actualApiKey);
+          const memoriesList = await storage.getMemories(singleSkill);
+          if (memoriesList && memoriesList.length > 0) {
+            matched = searchMemoriesInList(memoriesList, queryEmbedding, 3, 0.45);
+          }
+        } else {
+          const skillMemories = vectorDB.getMemories(singleSkill);
+          if (skillMemories && skillMemories.length > 0) {
+            const queryEmbedding = await getGeminiEmbedding(lastUserMessage || 'Analise o arquivo.', actualApiKey);
+            matched = vectorDB.search(singleSkill, queryEmbedding, 3, 0.45);
           }
         }
-        return list;
-      };
-      const allFiles = findFilesRecursive(details.files || []);
-      dadosFiles = allFiles.filter(f => f.startsWith('dados/')).map(f => f.replace('dados/', ''));
-      toolsScripts = allFiles.filter(f => f.startsWith('tools/') && f.endsWith('.py')).map(f => f.replace('tools/', ''));
-    } else {
-      const skillPath = path.join(SKILLS_DIR, skillToUse);
-      const dadosPath = path.join(skillPath, 'dados');
-      if (fs.existsSync(dadosPath)) {
-        dadosFiles = fs.readdirSync(dadosPath);
+        
+        if (matched && matched.length > 0) {
+          const formattedMems = matched.map(m => `- [${singleSkill}] ${m.text}`).join('\n');
+          matchedMemoriesPrompt += `\n${formattedMems}`;
+          trace.memories.push(...matched.map(m => `[${singleSkill}] ${m.text}`));
+        }
+      } catch (ragErr) {
+        console.error(`Erro RAG na skill ${singleSkill}:`, ragErr);
       }
-      const toolsPath = path.join(skillPath, 'tools');
-      if (fs.existsSync(toolsPath)) {
-        toolsScripts = fs.readdirSync(toolsPath).filter(f => f.endsWith('.py'));
+
+      // Arquivos e scripts por skill
+      if (storage.useFirebase) {
+        try {
+          const details = await storage.getSkill(singleSkill);
+          const findFilesRecursive = (nodes) => {
+            const list = [];
+            for (const node of nodes) {
+              if (node.type === 'file') list.push(node.path);
+              else if (node.children) list.push(...findFilesRecursive(node.children));
+            }
+            return list;
+          };
+          const allFiles = findFilesRecursive(details.files || []);
+          dadosFiles.push(...allFiles.filter(f => f.startsWith('dados/')).map(f => `${singleSkill}/${f.replace('dados/', '')}`));
+          toolsScripts.push(...allFiles.filter(f => f.startsWith('tools/') && f.endsWith('.py')).map(f => `${singleSkill}/${f.replace('tools/', '')}`));
+        } catch {}
+      } else {
+        const skillPath = path.join(SKILLS_DIR, singleSkill);
+        const dadosPath = path.join(skillPath, 'dados');
+        if (fs.existsSync(dadosPath)) {
+          dadosFiles.push(...fs.readdirSync(dadosPath).map(f => `${singleSkill}/${f}`));
+        }
+        const toolsPath = path.join(skillPath, 'tools');
+        if (fs.existsSync(toolsPath)) {
+          toolsScripts.push(...fs.readdirSync(toolsPath).filter(f => f.endsWith('.py')).map(f => `${singleSkill}/${f}`));
+        }
       }
     }
+
+    if (matchedMemoriesPrompt) {
+      matchedMemoriesPrompt = `\n\n=== HISTÓRICO E PREFERÊNCIAS APRENDIDAS (Recuperado do Banco Vetorial) ===\nSiga rigorosamente estas preferências de comportamento aprendidas para este grupo de Skills:${matchedMemoriesPrompt}\n=== FIM DAS PREFERÊNCIAS ===`;
+    }
+
+    steps.push({ 
+      step: 'load_skill', 
+      detail: selectedSkillList.length > 1 
+        ? `Agente Multi-Skill ativado com ${selectedSkillList.length} skills: ${selectedSkillList.join(', ')}`
+        : `Skill '${selectedSkillList[0]}' carregada no contexto.`
+    });
+
 
     // Constrói o Prompt de Sistema com o Contexto da Skill e RAG
     const agentSystemInstruction = `Você é o Agente Executivo operando sob a AI SKILL: "${skillToUse}".
@@ -2809,6 +2831,120 @@ function queueJob(skillName, triggerType, payload) {
   return job;
 }
 
+function queueJobWorkflow(workflow, triggerType, payload) {
+  const primarySkill = workflow.nodes?.find(n => n.type === 'ai_skill')?.config?.skillName || workflow.name;
+  const job = {
+    id: 'job_wf_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    skillName: primarySkill,
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    workflow: workflow,
+    triggerType,
+    payload,
+    status: 'queued',
+    queuedAt: new Date().toISOString(),
+    startedAt: null,
+    completedAt: null,
+    trace: null,
+    error: null
+  };
+  automationJobs.unshift(job);
+  if (automationJobs.length > maxLogEntries) {
+    automationJobs.pop();
+  }
+  saveAutomationLogs();
+  triggerWorker();
+  return job;
+}
+
+function getDefaultWorkflows() {
+  return [
+    {
+      id: 'wf_triagem_urgente',
+      name: 'Triagem & Alerta Médico de Urgência',
+      description: 'Filtra receituários/exames urgentes via Webhook, aciona a IA de Oncologia e envia alerta de emergência via HTTP.',
+      active: true,
+      triggerEndpoint: 'triagem-urgente',
+      nodes: [
+        {
+          id: 'node_1',
+          type: 'trigger',
+          name: 'Gatilho: Webhook HTTP Inbound',
+          config: {
+            triggerType: 'webhook',
+            endpoint: '/api/webhooks/triagem-urgente'
+          }
+        },
+        {
+          id: 'node_2',
+          type: 'condition',
+          name: 'Condição: Filtro de Urgência (IF)',
+          config: {
+            field: 'statusExame',
+            operator: 'equals',
+            value: 'urgente'
+          }
+        },
+        {
+          id: 'node_3',
+          type: 'ai_skill',
+          name: 'IA: Analista de Interações Onco-Farmacológicas',
+          config: {
+            skillName: 'analista-interacoes-polifarmacia-onco',
+            inputMapping: 'Analise o receituário e estado do paciente com prioridade máxima.'
+          }
+        },
+        {
+          id: 'node_4',
+          type: 'http_request',
+          name: 'Ação: Webhook HTTP de Saída (Alerta)',
+          config: {
+            method: 'POST',
+            url: 'https://api.hospital.com/v1/alertas-urgentes',
+            headers: { 'Content-Type': 'application/json' }
+          }
+        }
+      ]
+    },
+    {
+      id: 'wf_auditoria_semanal',
+      name: 'Auditoria Semanal Agendada de Prescrições',
+      description: 'Executa a skill de auditoria hospitalar todas as segundas-feiras às 08:00 para conferência geral.',
+      active: true,
+      triggerEndpoint: 'auditoria-semanal',
+      nodes: [
+        {
+          id: 'node_1',
+          type: 'trigger',
+          name: 'Gatilho: Cron Agendado',
+          config: {
+            triggerType: 'cron',
+            cronExpression: '0 8 * * 1'
+          }
+        },
+        {
+          id: 'node_2',
+          type: 'ai_skill',
+          name: 'IA: Auditor de Prescrição Hospitalar',
+          config: {
+            skillName: 'auditor-prescricao',
+            inputMapping: 'Varredura semanal de relatórios de auditoria e conformidade.'
+          }
+        },
+        {
+          id: 'node_3',
+          type: 'log_notify',
+          name: 'Ação: Log de Notificação do Sistema',
+          config: {
+            channel: 'system_logs',
+            message: 'Auditoria concluída com sucesso. Alertas gravados no painel.'
+          }
+        }
+      ]
+    }
+  ];
+}
+
 async function saveAutomationLogs() {
   try {
     if (storage.useFirebase) {
@@ -2875,6 +3011,134 @@ async function runBackgroundExecution(job) {
   if (!actualApiKey) {
     throw new Error('Chave de API do Gemini não configurada no servidor (Worker).');
   }
+
+  // --- SUPORTE A EXECUÇÃO DE WORKFLOW DE AUTOMAÇÃO EM NÓS (n8n level) ---
+  if (job.workflow) {
+    const wf = job.workflow;
+    const steps = [];
+    let currentPayload = job.payload || {};
+    let lastAiResponse = '';
+    let nodeResults = [];
+
+    steps.push({ step: 'workflow_start', detail: `Iniciando Workflow: ${wf.name}` });
+
+    for (const node of wf.nodes || []) {
+      if (node.type === 'trigger') {
+        steps.push({ step: 'node_exec', detail: `[Nó: ${node.name}] Gatilho ativado (${job.triggerType.toUpperCase()})` });
+        nodeResults.push({ nodeId: node.id, name: node.name, type: 'trigger', status: 'success', output: currentPayload });
+      } else if (node.type === 'condition') {
+        steps.push({ step: 'node_exec', detail: `[Nó: ${node.name}] Avaliando Regra de Condição (IF)` });
+        const fieldVal = currentPayload[node.config?.field] ?? currentPayload.payload?.[node.config?.field];
+        const targetVal = node.config?.value;
+        const op = node.config?.operator || 'equals';
+        
+        let passed = false;
+        if (op === 'equals') passed = String(fieldVal || '').toLowerCase() === String(targetVal || '').toLowerCase();
+        else if (op === 'contains') passed = String(fieldVal || '').toLowerCase().includes(String(targetVal || '').toLowerCase());
+        else if (op === 'not_empty') passed = fieldVal !== undefined && fieldVal !== null && fieldVal !== '';
+        else if (op === 'greater_than') passed = Number(fieldVal) > Number(targetVal);
+
+        nodeResults.push({ nodeId: node.id, name: node.name, type: 'condition', status: passed ? 'passed' : 'filtered', fieldVal, targetVal });
+        
+        if (!passed) {
+          steps.push({ step: 'node_skipped', detail: `[Nó: ${node.name}] Condição IF não atendida (campo '${node.config?.field}' = "${fieldVal}"). Fluxo encerrado.` });
+          break;
+        } else {
+          steps.push({ step: 'node_success', detail: `[Nó: ${node.name}] Condição IF aprovada. Seguindo fluxo.` });
+        }
+      } else if (node.type === 'ai_skill') {
+        const skillName = node.config?.skillName || job.skillName;
+        steps.push({ step: 'node_exec', detail: `[Nó: ${node.name}] Executando Skill de IA '${skillName}'...` });
+        
+        let playbookContent = '';
+        try {
+          const file = await storage.getFileContent(skillName, 'skill.md');
+          playbookContent = file.content || '';
+        } catch {}
+
+        const promptInput = node.config?.inputMapping || `Analise os dados recebidos: ${JSON.stringify(currentPayload)}`;
+        const aiPrompt = `Você é o Agente de IA executando a etapa '${node.name}' para a skill '${skillName}'.
+=== PLAYBOOK ===
+${playbookContent}
+=== FIM PLAYBOOK ===
+
+PAYLOAD DE ENTRADA:
+${JSON.stringify(currentPayload, null, 2)}
+
+INSTRUÇÃO DA ETAPA: ${promptInput}`;
+
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${actualApiKey}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: aiPrompt }] }],
+            systemInstruction: { parts: [{ text: "Você é um assistente de IA especialista. Responda rigorosamente em Português do Brasil (pt-BR)." }] }
+          })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          lastAiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          nodeResults.push({ nodeId: node.id, name: node.name, type: 'ai_skill', status: 'success', aiResponse: lastAiResponse });
+          steps.push({ step: 'node_success', detail: `[Nó: ${node.name}] Análise de IA gerada com sucesso.` });
+        } else {
+          nodeResults.push({ nodeId: node.id, name: node.name, type: 'ai_skill', status: 'error', error: 'Falha na resposta do Gemini' });
+        }
+      } else if (node.type === 'http_request') {
+        steps.push({ step: 'node_exec', detail: `[Nó: ${node.name}] Disparando Webhook HTTP de Saída...` });
+        const targetUrl = node.config?.url;
+        if (targetUrl && targetUrl.startsWith('http')) {
+          try {
+            await fetch(targetUrl, {
+              method: node.config?.method || 'POST',
+              headers: { 'Content-Type': 'application/json', ...(node.config?.headers || {}) },
+              body: JSON.stringify({
+                workflowId: wf.id,
+                workflowName: wf.name,
+                aiResponse: lastAiResponse,
+                payload: currentPayload,
+                timestamp: new Date().toISOString()
+              })
+            });
+            nodeResults.push({ nodeId: node.id, name: node.name, type: 'http_request', status: 'success', targetUrl });
+            steps.push({ step: 'node_success', detail: `[Nó: ${node.name}] Webhook entregue em ${targetUrl}` });
+          } catch (httpErr) {
+            nodeResults.push({ nodeId: node.id, name: node.name, type: 'http_request', status: 'failed', error: httpErr.message });
+          }
+        } else {
+          nodeResults.push({ nodeId: node.id, name: node.name, type: 'http_request', status: 'simulated', note: 'Webhook de exemplo processado.' });
+          steps.push({ step: 'node_success', detail: `[Nó: ${node.name}] Webhook de saída simulado.` });
+        }
+      } else if (node.type === 'log_notify') {
+        steps.push({ step: 'node_success', detail: `[Nó: ${node.name}] ${node.config?.message || 'Notificação registrada no sistema.'}` });
+        nodeResults.push({ nodeId: node.id, name: node.name, type: 'log_notify', status: 'success' });
+      }
+    }
+
+    const endTime = performance.now();
+    job.status = 'completed';
+    job.completedAt = new Date().toISOString();
+    job.trace = {
+      skillName: job.skillName,
+      workflowId: wf.id,
+      workflowName: wf.name,
+      routingReason: `Workflow '${wf.name}' concluído via ${job.triggerType.toUpperCase()}`,
+      thoughtProcess: lastAiResponse || 'Workflow executado sem erros.',
+      memories: [],
+      files: [],
+      tools: [],
+      metrics: {
+        latencyMs: Math.round(endTime - startTime),
+        tokens: { prompt: 0, completion: 0, total: 0 }
+      },
+      nodeResults,
+      steps
+    };
+    saveAutomationLogs();
+    return;
+  }
+
 
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
@@ -3294,6 +3558,97 @@ app.post('/api/automations/:skillName/toggle', async (req, res) => {
   }
 });
 
+// --- WORKFLOWS DE AUTOMAÇÃO ESTILO N8N ---
+
+app.get('/api/automations/workflows', async (req, res) => {
+  try {
+    let workflows = await storage.getSystemWorkflows();
+    if (!workflows || !Array.isArray(workflows) || workflows.length === 0) {
+      workflows = getDefaultWorkflows();
+      await storage.saveSystemWorkflows(workflows);
+    }
+    res.json(workflows);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao carregar workflows de automação: ' + error.message });
+  }
+});
+
+app.post('/api/automations/workflows', async (req, res) => {
+  try {
+    const workflowData = req.body;
+    if (!workflowData || !workflowData.name) {
+      return res.status(400).json({ error: 'Nome do workflow é obrigatório.' });
+    }
+
+    let workflows = (await storage.getSystemWorkflows()) || getDefaultWorkflows();
+    const existingIndex = workflows.findIndex(w => w.id === workflowData.id);
+
+    const newWf = {
+      id: workflowData.id || 'wf_' + Date.now(),
+      name: workflowData.name,
+      description: workflowData.description || '',
+      active: workflowData.active !== undefined ? workflowData.active : true,
+      triggerEndpoint: workflowData.triggerEndpoint || workflowData.id || 'endpoint_' + Date.now(),
+      nodes: workflowData.nodes || []
+    };
+
+    if (existingIndex >= 0) {
+      workflows[existingIndex] = newWf;
+    } else {
+      workflows.unshift(newWf);
+    }
+
+    await storage.saveSystemWorkflows(workflows);
+    res.json({ message: 'Workflow salvo com sucesso!', workflow: newWf });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao salvar workflow: ' + error.message });
+  }
+});
+
+app.delete('/api/automations/workflows/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    let workflows = (await storage.getSystemWorkflows()) || getDefaultWorkflows();
+    workflows = workflows.filter(w => w.id !== id);
+    await storage.saveSystemWorkflows(workflows);
+    res.json({ message: 'Workflow excluído com sucesso.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao excluir workflow: ' + error.message });
+  }
+});
+
+app.post('/api/automations/workflows/:id/toggle', async (req, res) => {
+  const { id } = req.params;
+  try {
+    let workflows = (await storage.getSystemWorkflows()) || getDefaultWorkflows();
+    const target = workflows.find(w => w.id === id);
+    if (!target) {
+      return res.status(404).json({ error: 'Workflow não encontrado.' });
+    }
+    target.active = !target.active;
+    await storage.saveSystemWorkflows(workflows);
+    res.json({ active: target.active, message: `Workflow ${target.active ? 'ativado' : 'pausado'} com sucesso.` });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao alterar status do workflow: ' + error.message });
+  }
+});
+
+app.post('/api/automations/workflows/:id/trigger', async (req, res) => {
+  const { id } = req.params;
+  const payload = req.body || {};
+  try {
+    let workflows = (await storage.getSystemWorkflows()) || getDefaultWorkflows();
+    const target = workflows.find(w => w.id === id);
+    if (!target) {
+      return res.status(404).json({ error: 'Workflow não encontrado.' });
+    }
+    const job = queueJobWorkflow(target, 'manual', payload);
+    res.json({ message: 'Workflow enfileirado para execução manual.', jobId: job.id });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao disparar workflow: ' + error.message });
+  }
+});
+
 app.post('/api/webhooks/:skillName', async (req, res) => {
   const { skillName } = req.params;
   const payload = req.body || {};
@@ -3306,6 +3661,27 @@ app.post('/api/webhooks/:skillName', async (req, res) => {
   }
 
   try {
+    // 1. Verifica se existe um workflow estilo n8n configurado para este endpoint
+    let workflows = (await storage.getSystemWorkflows()) || getDefaultWorkflows();
+    const matchingWf = workflows.find(w => 
+      w.id === skillName || 
+      w.triggerEndpoint === skillName || 
+      w.nodes?.some(n => n.type === 'trigger' && n.config?.endpoint?.includes(skillName))
+    );
+
+    if (matchingWf) {
+      if (!matchingWf.active) {
+        return res.status(530).json({ error: `O workflow '${matchingWf.name}' está desativado.` });
+      }
+      const job = queueJobWorkflow(matchingWf, 'webhook', payload);
+      return res.status(202).json({ 
+        message: `Workflow '${matchingWf.name}' aceito e enfileirado em background (202 Accepted).`, 
+        jobId: job.id, 
+        status: 'queued' 
+      });
+    }
+
+    // 2. Fallback: Skill simples configurada com trigger webhook
     let skill = null;
     if (storage.useFirebase) {
       const skills = await storage.listSkills();
@@ -3313,14 +3689,14 @@ app.post('/api/webhooks/:skillName', async (req, res) => {
     } else {
       const skillPath = safePath(SKILLS_DIR, skillName);
       if (!fs.existsSync(skillPath)) {
-        return res.status(404).json({ error: `Skill '${skillName}' não encontrada.` });
+        return res.status(404).json({ error: `Skill ou Workflow '${skillName}' não encontrado.` });
       }
       const playbookContent = fs.readFileSync(path.join(skillPath, 'skill.md'), 'utf8');
       skill = { name: skillName, ...storage.parseSkillMetadataFromContent(skillName, playbookContent) };
     }
 
     if (!skill) {
-      return res.status(404).json({ error: `Skill '${skillName}' não encontrada.` });
+      return res.status(404).json({ error: `Skill ou Workflow '${skillName}' não encontrado.` });
     }
 
     if (skill.trigger !== 'webhook') {
@@ -3341,6 +3717,7 @@ app.post('/api/webhooks/:skillName', async (req, res) => {
     res.status(500).json({ error: 'Erro ao enfileirar webhook: ' + error.message });
   }
 });
+
 
 // 12c. Configurar Automação de uma Skill (atualiza YAML do skill.md)
 app.post('/api/skills/:name/automation', async (req, res) => {

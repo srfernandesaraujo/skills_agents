@@ -1,12 +1,44 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Zap, Clock, Link, Play, AlertCircle, 
-  CheckCircle, RefreshCw, Eye, X, Copy, Database, Cpu
+  Zap, Clock, Play, 
+  CheckCircle, RefreshCw, Eye, X, Copy,
+  GitBranch, Bot, Send, Bell, Plus, Trash2, Edit3, ArrowRight, Layers, Sliders, Check
 } from 'lucide-react';
 
-interface AutomationLog {
+export interface WorkflowNode {
+  id: string;
+  type: 'trigger' | 'condition' | 'ai_skill' | 'http_request' | 'log_notify';
+  name: string;
+  config: {
+    triggerType?: 'webhook' | 'cron';
+    cronExpression?: string;
+    endpoint?: string;
+    field?: string;
+    operator?: 'equals' | 'contains' | 'not_empty' | 'greater_than';
+    value?: string;
+    skillName?: string;
+    inputMapping?: string;
+    method?: 'POST' | 'GET' | 'PUT';
+    url?: string;
+    headers?: Record<string, string>;
+    message?: string;
+  };
+}
+
+export interface Workflow {
+  id: string;
+  name: string;
+  description: string;
+  active: boolean;
+  triggerEndpoint: string;
+  nodes: WorkflowNode[];
+}
+
+export interface AutomationLog {
   id: string;
   skillName: string;
+  workflowId?: string;
+  workflowName?: string;
   triggerType: string;
   payload: any;
   status: 'queued' | 'running' | 'completed' | 'failed';
@@ -17,1064 +49,912 @@ interface AutomationLog {
   error: string | null;
 }
 
-interface AutomationTrigger {
-  skillName: string;
-  title: string;
-  description: string;
-  triggerType: 'cron' | 'webhook';
-  cronExpression: string | null;
-  webhookEndpoint: string;
-  paused: boolean;
-  lastExecution: AutomationLog | null;
-}
-
 interface AutomationsDashboardProps {
   backendUrl: string;
   skills: Array<{ name: string; title: string }>;
 }
 
 export const AutomationsDashboard: React.FC<AutomationsDashboardProps> = ({ backendUrl, skills }) => {
-  const [triggers, setTriggers] = useState<AutomationTrigger[]>([]);
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
   const [logs, setLogs] = useState<AutomationLog[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedTrace, setSelectedTrace] = useState<any | null>(null);
-  const [inspectorTab, setInspectorTab] = useState<'raciocinio' | 'rag' | 'ferramentas' | 'metricas'>('raciocinio');
-  const [manualPayloadInput, setManualPayloadInput] = useState('{\n  "statusExame": "urgente",\n  "paciente": "Maria Silva",\n  "idade": 45\n}');
-  const [triggeringSkill, setTriggeringSkill] = useState<string | null>(null);
   const [copiedText, setCopiedText] = useState<string | null>(null);
 
-  // Estados do Modal de Configuração de Automação
-  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
-  const [selectedSkillName, setSelectedSkillName] = useState('');
-  const [selectedTriggerType, setSelectedTriggerType] = useState<'webhook' | 'cron' | 'none'>('none');
-  const [cronExprInput, setCronExprInput] = useState('0 8 * * 1');
-  const [isSavingAutomation, setIsSavingAutomation] = useState(false);
+  // Payload de teste manual
+  const [manualPayloadInput, setManualPayloadInput] = useState<string>(
+    '{\n  "statusExame": "urgente",\n  "paciente": "Maria Silva",\n  "idade": 45,\n  "prescricao": "Cisplatina 50mg/m2 IV D1 + Paclitaxel 175mg/m2 IV D1"\n}'
+  );
+  const [isTriggeringWorkflow, setIsTriggeringWorkflow] = useState(false);
 
-  const handleSaveAutomation = async (skillName: string, triggerType: 'webhook' | 'cron' | 'none', cronExpression: string) => {
-    setIsSavingAutomation(true);
-    try {
-      const response = await fetch(`${backendUrl}/api/skills/${skillName}/automation`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ triggerType, cronExpression })
-      });
-
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Erro ao salvar automação.');
-      }
-
-      setIsConfigModalOpen(false);
-      setSelectedSkillName('');
-      setSelectedTriggerType('none');
-      setCronExprInput('0 8 * * 1');
-      loadAutomationsData();
-    } catch (err: any) {
-      alert('Erro ao configurar automação: ' + err.message);
-    } finally {
-      setIsSavingAutomation(false);
-    }
-  };
-
-  const handleConfigModalSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedSkillName) return;
-    handleSaveAutomation(selectedSkillName, selectedTriggerType, cronExprInput);
-  };
+  // Estados dos Modais
+  const [editingNode, setEditingNode] = useState<WorkflowNode | null>(null);
+  const [isAddNodeModalOpen, setIsAddNodeModalOpen] = useState(false);
+  const [newNodeType, setNewNodeType] = useState<WorkflowNode['type']>('ai_skill');
+  const [isCreateWorkflowModalOpen, setIsCreateWorkflowModalOpen] = useState(false);
+  const [newWfName, setNewWfName] = useState('');
+  const [newWfDesc, setNewWfDesc] = useState('');
 
   useEffect(() => {
-    loadAutomationsData();
+    loadWorkflowsAndLogs();
   }, [backendUrl]);
 
-  const loadAutomationsData = async () => {
+  const loadWorkflowsAndLogs = async () => {
     setIsLoading(true);
     try {
-      const trgRes = await fetch(`${backendUrl}/api/automations`);
-      const logsRes = await fetch(`${backendUrl}/api/automations/logs`);
-      
-      if (trgRes.ok && logsRes.ok) {
-        setTriggers(await trgRes.json());
+      const [wfRes, logsRes] = await Promise.all([
+        fetch(`${backendUrl}/api/automations/workflows`),
+        fetch(`${backendUrl}/api/automations/logs`)
+      ]);
+
+      if (wfRes.ok) {
+        const wfData: Workflow[] = await wfRes.json();
+        setWorkflows(wfData);
+        if (wfData.length > 0 && !selectedWorkflowId) {
+          setSelectedWorkflowId(wfData[0].id);
+        }
+      }
+
+      if (logsRes.ok) {
         setLogs(await logsRes.json());
       }
     } catch (err) {
-      console.error('Erro ao buscar dados de automações:', err);
+      console.error('Erro ao carregar automações:', err);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleToggleTrigger = async (skillName: string) => {
+  const selectedWorkflow = workflows.find(w => w.id === selectedWorkflowId) || workflows[0] || null;
+
+  const handleToggleWorkflow = async (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
     try {
-      const response = await fetch(`${backendUrl}/api/automations/${skillName}/toggle`, {
-        method: 'POST'
-      });
-      if (response.ok) {
-        loadAutomationsData();
+      const res = await fetch(`${backendUrl}/api/automations/workflows/${id}/toggle`, { method: 'POST' });
+      if (res.ok) {
+        loadWorkflowsAndLogs();
       }
     } catch (err) {
       console.error(err);
     }
   };
 
-  const handleTriggerManual = async (skillName: string) => {
+  const handleDeleteWorkflow = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm('Deseja realmente excluir este workflow de automação?')) return;
+    try {
+      const res = await fetch(`${backendUrl}/api/automations/workflows/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        if (selectedWorkflowId === id) setSelectedWorkflowId(null);
+        loadWorkflowsAndLogs();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleTriggerManualWorkflow = async () => {
+    if (!selectedWorkflow) return;
     let parsedPayload = {};
     try {
       parsedPayload = JSON.parse(manualPayloadInput);
     } catch (e) {
-      alert('JSON de Payload inválido! Corrija antes de disparar.');
+      alert('JSON de Payload de Entrada é inválido! Por favor, corrija antes de disparar.');
       return;
     }
 
+    setIsTriggeringWorkflow(true);
     try {
-      const response = await fetch(`${backendUrl}/api/automations/${skillName}/trigger`, {
+      const res = await fetch(`${backendUrl}/api/automations/workflows/${selectedWorkflow.id}/trigger`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(parsedPayload)
       });
-      if (response.ok) {
-        setTriggeringSkill(null);
-        setTimeout(() => loadAutomationsData(), 800); // Aguarda enfileiramento
+      if (res.ok) {
+        setTimeout(() => loadWorkflowsAndLogs(), 1000);
       }
     } catch (err) {
       console.error(err);
+    } finally {
+      setIsTriggeringWorkflow(false);
+    }
+  };
+
+  const handleSaveNodeConfig = async (updatedNode: WorkflowNode) => {
+    if (!selectedWorkflow) return;
+    const updatedNodes = selectedWorkflow.nodes.map(n => n.id === updatedNode.id ? updatedNode : n);
+    const updatedWf = { ...selectedWorkflow, nodes: updatedNodes };
+
+    try {
+      const res = await fetch(`${backendUrl}/api/automations/workflows`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedWf)
+      });
+      if (res.ok) {
+        setEditingNode(null);
+        loadWorkflowsAndLogs();
+      }
+    } catch (err) {
+      alert('Erro ao salvar nó: ' + err);
+    }
+  };
+
+  const handleAddNodeSubmit = async () => {
+    if (!selectedWorkflow) return;
+    const nodeCount = selectedWorkflow.nodes.length + 1;
+    let newName = 'Nova Etapa';
+    let defaultConfig: WorkflowNode['config'] = {};
+
+    if (newNodeType === 'ai_skill') {
+      newName = 'Executar IA';
+      defaultConfig = { skillName: skills[0]?.name || 'analista-interacoes-polifarmacia-onco', inputMapping: 'Analise o payload recebido.' };
+    } else if (newNodeType === 'condition') {
+      newName = 'Filtro Condicional (IF)';
+      defaultConfig = { field: 'statusExame', operator: 'equals', value: 'urgente' };
+    } else if (newNodeType === 'http_request') {
+      newName = 'Webhook HTTP de Saída';
+      defaultConfig = { method: 'POST', url: 'https://api.meusistema.com/webhook-saida' };
+    } else if (newNodeType === 'log_notify') {
+      newName = 'Notificação no Sistema';
+      defaultConfig = { message: 'Workflow executado com sucesso.' };
+    }
+
+    const newNode: WorkflowNode = {
+      id: 'node_' + Date.now(),
+      type: newNodeType,
+      name: `${newName} (#${nodeCount})`,
+      config: defaultConfig
+    };
+
+    const updatedWf = { ...selectedWorkflow, nodes: [...selectedWorkflow.nodes, newNode] };
+
+    try {
+      const res = await fetch(`${backendUrl}/api/automations/workflows`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedWf)
+      });
+      if (res.ok) {
+        setIsAddNodeModalOpen(false);
+        loadWorkflowsAndLogs();
+      }
+    } catch (err) {
+      alert('Erro ao adicionar nó: ' + err);
+    }
+  };
+
+  const handleDeleteNode = async (nodeId: string) => {
+    if (!selectedWorkflow) return;
+    if (selectedWorkflow.nodes.length <= 1) {
+      alert('O workflow precisa ter pelo menos um nó de gatilho.');
+      return;
+    }
+    const updatedNodes = selectedWorkflow.nodes.filter(n => n.id !== nodeId);
+    const updatedWf = { ...selectedWorkflow, nodes: updatedNodes };
+
+    try {
+      const res = await fetch(`${backendUrl}/api/automations/workflows`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedWf)
+      });
+      if (res.ok) {
+        loadWorkflowsAndLogs();
+      }
+    } catch (err) {
+      alert('Erro ao excluir nó: ' + err);
+    }
+  };
+
+  const handleCreateWorkflow = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newWfName) return;
+
+    const id = 'wf_' + Date.now();
+    const newWf: Workflow = {
+      id,
+      name: newWfName,
+      description: newWfDesc || 'Workflow customizado criado pelo usuário.',
+      active: true,
+      triggerEndpoint: 'endpoint_' + Date.now(),
+      nodes: [
+        {
+          id: 'node_1',
+          type: 'trigger',
+          name: 'Gatilho: Webhook HTTP Inbound',
+          config: { triggerType: 'webhook', endpoint: `/api/webhooks/endpoint_${Date.now()}` }
+        },
+        {
+          id: 'node_2',
+          type: 'ai_skill',
+          name: 'Etapa 1: Execução de IA',
+          config: { skillName: skills[0]?.name || 'analista-interacoes-polifarmacia-onco', inputMapping: 'Analise os dados fornecidos.' }
+        }
+      ]
+    };
+
+    try {
+      const res = await fetch(`${backendUrl}/api/automations/workflows`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newWf)
+      });
+      if (res.ok) {
+        setIsCreateWorkflowModalOpen(false);
+        setNewWfName('');
+        setNewWfDesc('');
+        setSelectedWorkflowId(id);
+        loadWorkflowsAndLogs();
+      }
+    } catch (err) {
+      alert('Erro ao criar workflow: ' + err);
     }
   };
 
   const copyToClipboard = (text: string) => {
-    const fullUrl = `${window.location.protocol}//${window.location.host}${text}`;
-    navigator.clipboard.writeText(fullUrl);
+    navigator.clipboard.writeText(text);
     setCopiedText(text);
     setTimeout(() => setCopiedText(null), 2000);
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'completed': return <CheckCircle size={14} className="text-green" />;
-      case 'failed': return <AlertCircle size={14} className="text-pink" />;
-      case 'running': return <RefreshCw size={14} className="text-purple pulse" />;
-      default: return <Clock size={14} className="text-muted" />;
+  const getNodeIcon = (type: WorkflowNode['type']) => {
+    switch (type) {
+      case 'trigger': return <Zap className="text-amber-400" size={18} style={{ color: '#fbbf24' }} />;
+      case 'condition': return <GitBranch className="text-cyan" size={18} style={{ color: 'var(--accent-cyan)' }} />;
+      case 'ai_skill': return <Bot className="text-purple" size={18} style={{ color: 'var(--accent-purple)' }} />;
+      case 'http_request': return <Send className="text-green" size={18} style={{ color: 'var(--accent-green)' }} />;
+      case 'log_notify': return <Bell className="text-blue-400" size={18} style={{ color: '#60a5fa' }} />;
+      default: return <Sliders size={18} />;
     }
   };
 
-  // Renderiza o modal de configuração visual de automação
-  const renderConfigModal = () => {
-    if (!isConfigModalOpen) return null;
-
-    return (
-      <div className="modal-backdrop" style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: 'rgba(0,0,0,0.75)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 2000
-      }}>
-        <div className="modal-container config-automation-modal glass-panel animate-fade-in" style={{
-          maxWidth: '480px',
-          width: '90%',
-          background: 'rgba(13, 20, 35, 0.98)',
-          border: '1px solid rgba(139, 92, 246, 0.3)',
-          padding: '24px',
-          borderRadius: '12px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '16px',
-          boxShadow: '0 20px 40px rgba(0,0,0,0.5)'
-        }}>
-          <div className="modal-header" style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            borderBottom: '1px solid var(--border-color)',
-            paddingBottom: '12px'
-          }}>
-            <div className="modal-header-title" style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}>
-              <Zap className="text-purple pulse" size={18} />
-              <h2 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)' }}>Configurar Gatilho de Automação</h2>
-            </div>
-            <button 
-              className="btn-close-modal" 
-              onClick={() => {
-                setIsConfigModalOpen(false);
-                setSelectedSkillName('');
-                setSelectedTriggerType('none');
-              }} 
-              disabled={isSavingAutomation}
-              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
-            >
-              <X size={16} />
-            </button>
-          </div>
-
-          <form onSubmit={handleConfigModalSubmit} className="modal-form-body" style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '16px'
-          }}>
-            <div className="form-field" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Selecione a Skill de IA</label>
-              <select 
-                value={selectedSkillName} 
-                onChange={e => {
-                  setSelectedSkillName(e.target.value);
-                  // Auto-seleciona webhook para inicializar
-                  setSelectedTriggerType('webhook');
-                }}
-                required
-                disabled={isSavingAutomation}
-                style={{
-                  background: 'rgba(255, 255, 255, 0.03)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '8px',
-                  color: 'var(--text-primary)',
-                  padding: '10px 14px',
-                  fontSize: '0.875rem',
-                  outline: 'none',
-                  cursor: 'pointer'
-                }}
-              >
-                <option value="" style={{ background: '#0d1423' }}>-- Escolha uma Skill --</option>
-                {skills.map(s => (
-                  <option key={s.name} value={s.name} style={{ background: '#0d1423' }}>{s.title} ({s.name}/)</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="form-field" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Tipo de Gatilho (Trigger)</label>
-              <select 
-                value={selectedTriggerType} 
-                onChange={e => setSelectedTriggerType(e.target.value as any)}
-                required
-                disabled={isSavingAutomation}
-                style={{
-                  background: 'rgba(255, 255, 255, 0.03)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '8px',
-                  color: 'var(--text-primary)',
-                  padding: '10px 14px',
-                  fontSize: '0.875rem',
-                  outline: 'none',
-                  cursor: 'pointer'
-                }}
-              >
-                <option value="none" style={{ background: '#0d1423' }}>Desativado (Nenhum)</option>
-                <option value="webhook" style={{ background: '#0d1423' }}>Webhook (Event-Driven por POST)</option>
-                <option value="cron" style={{ background: '#0d1423' }}>Agendamento Cron (Temporal)</option>
-              </select>
-            </div>
-
-            {selectedTriggerType === 'cron' && (
-              <div className="form-field animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Expressão Cron</label>
-                <input 
-                  type="text" 
-                  placeholder="ex: 0 8 * * 1" 
-                  value={cronExprInput}
-                  onChange={e => setCronExprInput(e.target.value)}
-                  required
-                  disabled={isSavingAutomation}
-                  style={{
-                    background: 'rgba(255, 255, 255, 0.03)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '8px',
-                    color: 'var(--text-primary)',
-                    padding: '10px 14px',
-                    fontSize: '0.875rem',
-                    outline: 'none'
-                  }}
-                />
-                <span className="field-hint" style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
-                  Estrutura: <code>minuto hora dia-do-mês mês dia-da-semana</code>.<br />
-                  Exemplos: <code>0 8 * * 1</code> (Toda segunda às 8h), <code>0 * * * *</code> (Toda hora), <code>*/15 * * * *</code> (A cada 15 min).
-                </span>
-              </div>
-            )}
-
-            {selectedTriggerType === 'webhook' && (
-              <div className="webhook-preview-box animate-fade-in" style={{
-                background: 'rgba(139, 92, 246, 0.05)',
-                border: '1px solid rgba(139, 92, 246, 0.15)',
-                borderRadius: '8px',
-                padding: '12px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '6px'
-              }}>
-                <span className="preview-label" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 600 }}>Rota de Webhook Criada:</span>
-                <code className="preview-url" style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: '0.8rem',
-                  color: 'var(--accent-cyan)',
-                  background: 'rgba(0,0,0,0.2)',
-                  padding: '4px 8px',
-                  borderRadius: '4px',
-                  wordBreak: 'break-all'
-                }}>/api/webhooks/{selectedSkillName || ':skill-slug'}</code>
-                <span className="preview-hint" style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>O sistema gerará um token Bearer para requisições POST seguras a este endpoint.</span>
-              </div>
-            )}
-
-            <div className="modal-footer" style={{
-              display: 'flex',
-              justifyContent: 'flex-end',
-              gap: '8px',
-              borderTop: '1px solid var(--border-color)',
-              paddingTop: '12px',
-              marginTop: '8px'
-            }}>
-              <button 
-                type="button" 
-                className="btn btn-secondary" 
-                onClick={() => {
-                  setIsConfigModalOpen(false);
-                  setSelectedSkillName('');
-                  setSelectedTriggerType('none');
-                }}
-                disabled={isSavingAutomation}
-              >
-                Cancelar
-              </button>
-              <button 
-                type="submit" 
-                className="btn btn-primary" 
-                disabled={isSavingAutomation || !selectedSkillName}
-              >
-                {isSavingAutomation ? 'Salvando...' : 'Salvar Automação'}
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-    );
+  const getNodeBadgeColor = (type: WorkflowNode['type']) => {
+    switch (type) {
+      case 'trigger': return 'rgba(251, 191, 36, 0.15)';
+      case 'condition': return 'rgba(6, 182, 212, 0.15)';
+      case 'ai_skill': return 'rgba(139, 92, 246, 0.15)';
+      case 'http_request': return 'rgba(16, 185, 129, 0.15)';
+      case 'log_notify': return 'rgba(96, 165, 250, 0.15)';
+      default: return 'rgba(255, 255, 255, 0.05)';
+    }
   };
 
   return (
-    <div className="automations-dashboard-layout">
-      {renderConfigModal()}
-      {/* Corpo Central: Dashboard e histórico */}
-      <div className="automations-main-pane scrollbar-custom">
-        <div className="dashboard-header-bar">
-          <div className="dashboard-title">
-            <Zap size={22} className="text-purple pulse" />
-            <div>
-              <h3>Painel de Automações (Event-Driven)</h3>
-              <p>Gatilhos inteligentes disparados por Webhooks locais ou Agendamento Cron.</p>
-            </div>
-          </div>
-          <div className="dashboard-header-actions" style={{ display: 'flex', gap: '8px' }}>
-            <button className="btn btn-primary" onClick={() => setIsConfigModalOpen(true)}>
-              <Zap size={14} />
-              Configurar Novo Gatilho
-            </button>
-            <button className="btn btn-secondary" onClick={loadAutomationsData} disabled={isLoading}>
-              <RefreshCw size={14} className={isLoading ? 'pulse' : ''} />
-              Atualizar Painel
-            </button>
-          </div>
+    <div className="automations-dashboard-container animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
+      
+      {/* Top Header Section */}
+      <div className="automations-header-section" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+        <div>
+          <h2 style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <Zap className="text-purple pulse" size={24} /> Engine de Automações & Workflows (Nível n8n)
+          </h2>
+          <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+            Construa fluxos interativos de nós (Gatilhos, Condições IF, Execução de Skills de IA e Webhooks de Saída) e acompanhe a execução em tempo real.
+          </p>
         </div>
 
-        {/* Dashboard Cards Grid */}
-        <section className="triggers-section">
-          <h4>Gatilhos Ativos</h4>
-          {triggers.length === 0 ? (
-            <div className="empty-triggers-card glass-panel" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', padding: '32px' }}>
-              <Zap size={32} className="text-muted" />
-              <p>Nenhum gatilho de automação detectado nos playbooks locais.</p>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', marginBottom: '8px' }}>Gatilhos são definidos no cabeçalho YAML do arquivo skill.md ou configurados visualmente clicando no botão abaixo:</span>
-              <button className="btn btn-primary btn-sm" onClick={() => setIsConfigModalOpen(true)}>
-                <Zap size={13} />
-                Configurar Primeiro Gatilho
-              </button>
-            </div>
-          ) : (
-            <div className="triggers-grid">
-              {triggers.map(t => (
-                <div key={t.skillName} className={`trigger-card glass-panel ${t.paused ? 'paused-card' : ''}`}>
-                  <div className="trigger-card-header">
-                    <div className="trigger-icon-wrapper">
-                      {t.triggerType === 'cron' ? <Clock size={18} className="text-cyan" /> : <Link size={18} className="text-purple" />}
-                    </div>
-                    <div className="trigger-header-info">
-                      <h5>{t.title}</h5>
-                      <span className="trigger-skill-folder">Pasta: <code>{t.skillName}</code></span>
-                    </div>
-                    <div className="toggle-switch-container" title={t.paused ? 'Pausado' : 'Ativo'}>
-                      <button 
-                        className={`toggle-btn ${t.paused ? 'paused' : 'active'}`}
-                        onClick={() => handleToggleTrigger(t.skillName)}
-                      >
-                        {t.paused ? 'Pausado' : 'Ativo'}
-                      </button>
-                    </div>
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <button 
+            className="btn btn-secondary btn-sm"
+            onClick={loadWorkflowsAndLogs}
+            disabled={isLoading}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
+            <RefreshCw size={14} className={isLoading ? 'pulse' : ''} />
+            Atualizar Status
+          </button>
+          <button 
+            className="btn btn-primary btn-sm"
+            onClick={() => setIsCreateWorkflowModalOpen(true)}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
+            <Plus size={16} />
+            Novo Workflow
+          </button>
+        </div>
+      </div>
+
+      {/* Carrossel / Seletor de Workflows Salvos */}
+      <div className="workflows-selector-bar glass-panel" style={{ padding: '16px', borderRadius: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h4 style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Layers size={16} className="text-purple" /> Workflows de Automação Ativos ({workflows.length})
+          </h4>
+        </div>
+
+        <div className="workflows-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '12px' }}>
+          {workflows.map(wf => {
+            const isSelected = wf.id === selectedWorkflowId;
+            const triggerNode = wf.nodes.find(n => n.type === 'trigger');
+            const aiNode = wf.nodes.find(n => n.type === 'ai_skill');
+
+            return (
+              <div 
+                key={wf.id} 
+                onClick={() => setSelectedWorkflowId(wf.id)}
+                className={`glass-panel ${isSelected ? 'selected-wf-card' : ''}`}
+                style={{
+                  padding: '14px 16px',
+                  borderRadius: '10px',
+                  border: isSelected ? '1px solid var(--accent-purple)' : '1px solid var(--border-color)',
+                  background: isSelected ? 'rgba(139, 92, 246, 0.1)' : 'rgba(0, 0, 0, 0.2)',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <h4 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>{wf.name}</h4>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{wf.description}</p>
                   </div>
-
-                  <p className="trigger-desc">{t.description}</p>
-
-                  <div className="trigger-meta-details">
-                    {t.triggerType === 'cron' ? (
-                      <div className="meta-detail-row">
-                        <span className="detail-label">Agendamento:</span>
-                        <span className="detail-val cron-val font-mono">{t.cronExpression}</span>
-                      </div>
-                    ) : (
-                      <div className="meta-detail-row vertical">
-                        <span className="detail-label">Webhook Endpoint:</span>
-                        <div className="webhook-copy-wrapper">
-                          <span className="detail-val font-mono truncate">{t.webhookEndpoint}</span>
-                          <button 
-                            className="btn-copy-webhook"
-                            onClick={() => copyToClipboard(t.webhookEndpoint)}
-                            title="Copiar URL Completa"
-                          >
-                            <Copy size={12} />
-                            {copiedText === t.webhookEndpoint ? 'Copiado!' : 'Copiar'}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {t.lastExecution && (
-                      <div className="meta-detail-row">
-                        <span className="detail-label">Última execução:</span>
-                        <span className="detail-val execution-status-tag">
-                          {getStatusIcon(t.lastExecution.status)}
-                          <span className="capitalize">{t.lastExecution.status}</span>
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="trigger-actions">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <button 
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => setTriggeringSkill(t.skillName)}
-                      disabled={t.paused}
+                      onClick={(e) => handleToggleWorkflow(wf.id, e)}
+                      style={{
+                        background: wf.active ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                        border: 'none',
+                        borderRadius: '12px',
+                        padding: '2px 8px',
+                        fontSize: '0.7rem',
+                        fontWeight: 600,
+                        color: wf.active ? '#34d399' : '#f87171',
+                        cursor: 'pointer'
+                      }}
                     >
-                      <Play size={12} />
-                      Disparar Manual
+                      {wf.active ? 'Ativo' : 'Pausado'}
+                    </button>
+                    <button 
+                      onClick={(e) => handleDeleteWorkflow(wf.id, e)}
+                      style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}
+                      title="Excluir Workflow"
+                    >
+                      <Trash2 size={14} />
                     </button>
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </section>
 
-        {/* Logs de Execução de Background */}
-        <section className="logs-section">
-          <h4>Histórico de Auditoria em Segundo Plano</h4>
-          {logs.length === 0 ? (
-            <p className="empty-logs-text">Nenhuma execução em background registrada ainda.</p>
-          ) : (
-            <div className="logs-table-container glass-panel">
-              <table className="logs-table">
-                <thead>
-                  <tr>
-                    <th>Gatilho</th>
-                    <th>Skill</th>
-                    <th>Status</th>
-                    <th>Agendado em</th>
-                    <th>Latência</th>
-                    <th>Consumo</th>
-                    <th>Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {logs.map(log => (
-                    <tr key={log.id}>
-                      <td className="log-type-cell">
-                        <span className={`log-type-badge ${log.triggerType}`}>
-                          {log.triggerType}
-                        </span>
-                      </td>
-                      <td className="log-skill-cell font-mono">{log.skillName}</td>
-                      <td className="log-status-cell">
-                        <div className="status-flex">
-                          {getStatusIcon(log.status)}
-                          <span>{log.status}</span>
-                        </div>
-                      </td>
-                      <td className="log-time-cell">
-                        {new Date(log.queuedAt).toLocaleString('pt-BR')}
-                      </td>
-                      <td className="log-latency-cell font-mono">
-                        {log.trace?.metrics?.latencyMs ? `${log.trace.metrics.latencyMs}ms` : '-'}
-                      </td>
-                      <td className="log-tokens-cell font-mono">
-                        {log.trace?.metrics?.tokens?.total ? `${log.trace.metrics.tokens.total} tk` : '-'}
-                      </td>
-                      <td>
-                        {log.trace ? (
-                          <button 
-                            className="btn btn-secondary btn-xs btn-icon"
-                            onClick={() => { setSelectedTrace(log.trace); setInspectorTab('raciocinio'); }}
-                            title="Ver Auditoria Detalhada"
-                          >
-                            <Eye size={12} />
-                            Auditar
-                          </button>
-                        ) : (
-                          <span className="text-muted text-xs">{log.error || '-'}</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(255, 255, 255, 0.05)', padding: '2px 6px', borderRadius: '4px' }}>
+                    {triggerNode?.config?.triggerType === 'cron' ? <Clock size={12} /> : <Zap size={12} />}
+                    {triggerNode?.name || 'Gatilho'}
+                  </span>
+                  <span>→</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(139, 92, 246, 0.15)', padding: '2px 6px', borderRadius: '4px', color: 'var(--accent-purple)' }}>
+                    <Bot size={12} />
+                    {aiNode?.config?.skillName || 'IA Skill'}
+                  </span>
+                  <span style={{ marginLeft: 'auto', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    {wf.nodes.length} nós
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
-      {/* Modal Disparar Manual */}
-      {triggeringSkill && (
-        <div className="modal-overlay">
-          <div className="modal-content glass-panel animate-slide-in">
-            <div className="modal-header">
-              <h4>Disparar Manualmente: {triggeringSkill}</h4>
-              <button className="btn-close-modal" onClick={() => setTriggeringSkill(null)}>
-                <X size={16} />
-              </button>
-            </div>
-            <div className="modal-body">
-              <p className="modal-desc">
-                Injete um payload JSON customizado para simular a chegada do evento no Webhook/Cron em segundo plano:
-              </p>
-              <textarea
-                className="input-text payload-textarea font-mono"
-                rows={8}
-                value={manualPayloadInput}
-                onChange={e => setManualPayloadInput(e.target.value)}
-              />
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={() => setTriggeringSkill(null)}>
-                Cancelar
-              </button>
-              <button className="btn btn-primary" onClick={() => handleTriggerManual(triggeringSkill)}>
-                Enfileirar Tarefa
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Drawer do Inspetor Shadowing (Reutilizado) */}
-      {selectedTrace && (
-        <div className="inspector-drawer glass-panel animate-slide-in-right">
-          <div className="inspector-header">
-            <div className="inspector-title">
-              <Eye size={18} className="text-purple pulse" />
+      {selectedWorkflow && (
+        <>
+          {/* PAINEL PRINCIPAL: CONSTRUTOR VISUAL DE WORKFLOW POR NÓS (n8n level) */}
+          <div className="workflow-canvas-panel glass-panel" style={{ padding: '24px', borderRadius: '12px', display: 'flex', flexDirection: 'column', gap: '20px', border: '1px solid rgba(139, 92, 246, 0.3)' }}>
+            
+            {/* Header do Canvas */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '14px' }}>
               <div>
-                <h3>Auditorias de Segundo Plano</h3>
-                <p>Modo Shadowing & Explicabilidade</p>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <h3 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)' }}>{selectedWorkflow.name}</h3>
+                  <span style={{ background: selectedWorkflow.active ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)', color: selectedWorkflow.active ? '#34d399' : '#f87171', fontSize: '0.7rem', padding: '2px 8px', borderRadius: '10px', fontWeight: 600 }}>
+                    {selectedWorkflow.active ? '● Executando em Tempo Real' : '○ Pausado'}
+                  </span>
+                </div>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>{selectedWorkflow.description}</p>
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <button 
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setIsAddNodeModalOpen(true)}
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Plus size={14} /> Adicionar Nó de Etapa
+                </button>
+
+                <button 
+                  className="btn btn-primary btn-sm"
+                  onClick={handleTriggerManualWorkflow}
+                  disabled={isTriggeringWorkflow}
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Play size={14} className={isTriggeringWorkflow ? 'pulse' : ''} />
+                  {isTriggeringWorkflow ? 'Disparando Workflow...' : 'Testar Execução Manual'}
+                </button>
               </div>
             </div>
-            <button className="btn-close-inspector" onClick={() => setSelectedTrace(null)}>
-              <X size={16} />
-            </button>
-          </div>
 
-          <div className="inspector-tabs-bar">
-            <button 
-              className={`inspector-tab-btn ${inspectorTab === 'raciocinio' ? 'active' : ''}`}
-              onClick={() => setInspectorTab('raciocinio')}
-            >
-              Raciocínio
-            </button>
-            <button 
-              className={`inspector-tab-btn ${inspectorTab === 'rag' ? 'active' : ''}`}
-              onClick={() => setInspectorTab('rag')}
-            >
-              Memória (RAG)
-            </button>
-            <button 
-              className={`inspector-tab-btn ${inspectorTab === 'ferramentas' ? 'active' : ''}`}
-              onClick={() => setInspectorTab('ferramentas')}
-            >
-              Ferramentas
-            </button>
-            <button 
-              className={`inspector-tab-btn ${inspectorTab === 'metricas' ? 'active' : ''}`}
-              onClick={() => setInspectorTab('metricas')}
-            >
-              Métricas
-            </button>
-          </div>
-
-          <div className="inspector-content scrollbar-custom">
-            {inspectorTab === 'raciocinio' && (
-              <div className="inspector-tab-pane animate-fade-in">
-                <h4>Cadeia de Pensamento (Chain of Thought)</h4>
-                <p className="tab-description">Processo analítico interno executado em background:</p>
-                {selectedTrace.thoughtProcess ? (
-                  <div className="thought-process-block">
-                    {selectedTrace.thoughtProcess.split('\n').map((line: string, i: number) => (
-                      <p key={i} className="thought-line">{line}</p>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="empty-trace-text">Nenhum raciocínio interno documentado nesta chamada.</p>
-                )}
+            {/* VISUALIZADOR DE GRAFO / FLUXO DE NÓS SEQUENCIAIS E RAMIFICADOS */}
+            <div className="nodes-pipeline-canvas" style={{ background: 'rgba(0,0,0,0.3)', padding: '24px', borderRadius: '12px', border: '1px solid var(--border-color)', overflowX: 'auto' }}>
+              <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '16px', letterSpacing: '0.05em' }}>
+                Fluxo de Execução Interativo (Clique em qualquer nó para editar parâmetros):
               </div>
-            )}
 
-            {inspectorTab === 'rag' && (
-              <div className="inspector-tab-pane animate-fade-in">
-                <h4>Memórias Recuperadas</h4>
-                {selectedTrace.memories && selectedTrace.memories.length > 0 ? (
-                  <div className="retrieved-memories-list">
-                    {selectedTrace.memories.map((m: string, i: number) => (
-                      <div key={i} className="retrieved-memory-item glass-panel">
-                        <Database size={14} className="text-cyan" />
-                        <span>{m}</span>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="empty-trace-text">Nenhuma memória vetorial resgatada para este job.</p>
-                )}
-              </div>
-            )}
-
-            {inspectorTab === 'ferramentas' && (
-              <div className="inspector-tab-pane animate-fade-in">
-                <h4>Ferramentas Executadas</h4>
-                {selectedTrace.tools && selectedTrace.tools.length > 0 ? (
-                  <div className="executed-tools-list">
-                    {selectedTrace.tools.map((t: any, i: number) => (
-                      <div key={i} className="executed-tool-card glass-panel">
-                        <div className="tool-card-header">
-                          <Cpu size={14} className={t.success ? "text-green" : "text-pink"} />
-                          <h5>{t.name}</h5>
+              <div className="nodes-flow-row" style={{ display: 'flex', alignItems: 'center', gap: '16px', minWidth: 'max-content' }}>
+                {selectedWorkflow.nodes.map((node, index) => (
+                  <React.Fragment key={node.id}>
+                    {/* Nó de Etapa */}
+                    <div 
+                      className="workflow-node-card glass-panel animate-slide-in"
+                      onClick={() => setEditingNode(node)}
+                      style={{
+                        background: getNodeBadgeColor(node.type),
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '10px',
+                        padding: '16px',
+                        width: '240px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '10px',
+                        cursor: 'pointer',
+                        position: 'relative',
+                        transition: 'transform 0.2s ease, border-color 0.2s ease',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          {getNodeIcon(node.type)}
+                          <span style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-secondary)' }}>
+                            {node.type === 'trigger' ? 'Gatilho Inbound' :
+                             node.type === 'condition' ? 'Filtro (IF)' :
+                             node.type === 'ai_skill' ? 'IA Playbook' :
+                             node.type === 'http_request' ? 'Webhook Saída' : 'Notificação'}
+                          </span>
                         </div>
-                        <div className="tool-card-details">
-                          <h6>Parâmetros de Entrada (Inputs):</h6>
-                          <pre>{JSON.stringify(t.inputs, null, 2)}</pre>
-                          <h6>Resultado (Outputs):</h6>
-                          <pre>{t.outputs}</pre>
+
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          <button 
+                            className="btn-link" 
+                            style={{ padding: '2px', color: 'var(--text-muted)' }}
+                            onClick={(e) => { e.stopPropagation(); setEditingNode(node); }}
+                            title="Editar Nó"
+                          >
+                            <Edit3 size={12} />
+                          </button>
+                          {node.type !== 'trigger' && (
+                            <button 
+                              className="btn-link" 
+                              style={{ padding: '2px', color: '#f87171' }}
+                              onClick={(e) => { e.stopPropagation(); handleDeleteNode(node.id); }}
+                              title="Excluir Nó"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          )}
                         </div>
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="empty-trace-text">Nenhum script Python executado neste job.</p>
-                )}
-              </div>
-            )}
 
-            {inspectorTab === 'metricas' && (
-              <div className="inspector-tab-pane animate-fade-in">
-                <h4>Métricas de Execução</h4>
-                <div className="metrics-grid">
-                  <div className="metric-card glass-panel">
-                    <span className="metric-label">Latência Total</span>
-                    <span className="metric-value">{selectedTrace.metrics?.latencyMs} ms</span>
-                  </div>
-                  <div className="metric-card glass-panel">
-                    <span className="metric-label">Tokens Totais</span>
-                    <span className="metric-value">{selectedTrace.metrics?.tokens?.total}</span>
-                  </div>
-                  <div className="metric-card glass-panel">
-                    <span className="metric-label">Prompt Tokens</span>
-                    <span className="metric-value">{selectedTrace.metrics?.tokens?.prompt}</span>
-                  </div>
-                  <div className="metric-card glass-panel">
-                    <span className="metric-label">Completion Tokens</span>
-                    <span className="metric-value">{selectedTrace.metrics?.tokens?.completion}</span>
-                  </div>
-                </div>
-
-                <div className="trace-meta-info glass-panel">
-                  <h5>Informações do Roteamento</h5>
-                  <div className="meta-row">
-                    <span className="meta-label">Skill Utilizada:</span>
-                    <span className="meta-val text-cyan">{selectedTrace.skillName}</span>
-                  </div>
-                  {selectedTrace.routingReason && (
-                    <div className="meta-row vertical">
-                      <span className="meta-label">Justificativa:</span>
-                      <p className="meta-text">{selectedTrace.routingReason}</p>
+                      <div>
+                        <h4 style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>{node.name}</h4>
+                        
+                        {/* Resumo da Configuração do Nó */}
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', background: 'rgba(0,0,0,0.3)', padding: '6px 8px', borderRadius: '6px', fontFamily: 'var(--font-mono)' }}>
+                          {node.type === 'trigger' && (
+                            <span>
+                              {node.config.triggerType === 'cron' ? `Cron: "${node.config.cronExpression}"` : `Endpoint: ${node.config.endpoint}`}
+                            </span>
+                          )}
+                          {node.type === 'condition' && (
+                            <span>
+                              IF payload.{node.config.field} {node.config.operator} "{node.config.value}"
+                            </span>
+                          )}
+                          {node.type === 'ai_skill' && (
+                            <span>
+                              Skill: <strong>{node.config.skillName}</strong>
+                            </span>
+                          )}
+                          {node.type === 'http_request' && (
+                            <span>
+                              {node.config.method || 'POST'} {node.config.url?.slice(0, 25)}...
+                            </span>
+                          )}
+                          {node.type === 'log_notify' && (
+                            <span>
+                              Msg: {node.config.message || 'Log registrado.'}
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  )}
+
+                    {/* Seta de Conexão entre Nós (Next Arrow) */}
+                    {index < selectedWorkflow.nodes.length - 1 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                        <ArrowRight size={20} className="text-purple pulse" style={{ color: 'var(--accent-purple)' }} />
+                      </div>
+                    )}
+                  </React.Fragment>
+                ))}
+
+                {/* Botão Adicionar Nó ao final da cadeia */}
+                <button 
+                  onClick={() => setIsAddNodeModalOpen(true)}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px dashed var(--border-color)',
+                    borderRadius: '10px',
+                    padding: '16px',
+                    width: '120px',
+                    height: '100px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    color: 'var(--text-muted)',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <Plus size={20} />
+                  <span style={{ fontSize: '0.7rem', fontWeight: 600 }}>Nó</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Painel de Endpoint & cURL Snippet para Injeção Externa */}
+            {selectedWorkflow.triggerEndpoint && (
+              <div style={{ background: 'rgba(0,0,0,0.2)', padding: '14px 16px', borderRadius: '8px', border: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                <div>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Webhook Endpoint de Disparo do Workflow:</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' }}>
+                    <code style={{ color: 'var(--accent-cyan)', fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>
+                      {backendUrl}/api/webhooks/{selectedWorkflow.triggerEndpoint}
+                    </code>
+                    <button 
+                      className="btn-link" 
+                      onClick={() => copyToClipboard(`${backendUrl}/api/webhooks/${selectedWorkflow.triggerEndpoint}`)}
+                      style={{ fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    >
+                      {copiedText ? <Check size={12} className="text-green" /> : <Copy size={12} />}
+                      {copiedText ? 'Copiado!' : 'Copiar URL'}
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                  Header: <code style={{ color: 'var(--text-primary)' }}>Authorization: Bearer skills_automation_secret</code>
                 </div>
               </div>
             )}
+          </div>
+
+          {/* INSPECTOR DE AUDITORIA & EXECUÇÃO DO WORKFLOW */}
+          <div className="workflow-inspector-panel glass-panel" style={{ padding: '24px', borderRadius: '12px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Eye size={18} className="text-purple" />
+                <h3 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)' }}>Inspetor de Execuções e Auditoria de Nós</h3>
+              </div>
+
+              {/* Payload de Teste Rápido Input */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Payload JSON para Teste:</span>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px' }}>
+              {/* Lado Esquerdo: Payload JSON de Teste e Disparo Manual */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Editar Payload JSON de Teste:</label>
+                <textarea 
+                  value={manualPayloadInput}
+                  onChange={e => setManualPayloadInput(e.target.value)}
+                  style={{
+                    width: '100%',
+                    height: '180px',
+                    background: 'rgba(0,0,0,0.4)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '8px',
+                    padding: '10px',
+                    color: 'var(--text-primary)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.75rem',
+                    resize: 'none',
+                    outline: 'none'
+                  }}
+                />
+                <button 
+                  className="btn btn-primary btn-sm"
+                  onClick={handleTriggerManualWorkflow}
+                  disabled={isTriggeringWorkflow}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                >
+                  <Play size={14} className={isTriggeringWorkflow ? 'pulse' : ''} />
+                  {isTriggeringWorkflow ? 'Executando Workflow...' : 'Disparar Teste Manual'}
+                </button>
+              </div>
+
+              {/* Lado Direito: Histórico e Rastro de Auditoria */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Histórico de Execuções Recentes:</label>
+                
+                {logs.length === 0 ? (
+                  <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                    Nenhuma execução registrada ainda. Dispare o teste manual acima para ver os nós em ação!
+                  </div>
+                ) : (
+                  <div className="logs-history-list" style={{ maxHeight: '240px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {logs.map(log => (
+                      <div 
+                        key={log.id}
+                        onClick={() => setSelectedTrace(log.trace)}
+                        style={{
+                          background: 'rgba(0, 0, 0, 0.3)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '8px',
+                          padding: '10px 14px',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <CheckCircle size={14} className={log.status === 'completed' ? 'text-green' : 'text-pink'} style={{ color: log.status === 'completed' ? '#34d399' : '#f87171' }} />
+                          <div>
+                            <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                              {log.workflowName || log.skillName} ({log.triggerType.toUpperCase()})
+                            </span>
+                            <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                              Iniciado em: {new Date(log.queuedAt).toLocaleTimeString()}
+                            </p>
+                          </div>
+                        </div>
+
+                        <button className="btn-link" style={{ fontSize: '0.75rem', color: 'var(--accent-purple)' }}>Ver Nós & Trace →</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {selectedTrace && (
+                  <div className="trace-modal-box glass-panel animate-slide-in" style={{ marginTop: '12px', padding: '14px', borderRadius: '8px', border: '1px solid var(--accent-purple)', background: 'rgba(139, 92, 246, 0.05)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <h4 style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)' }}>Rastro de Auditoria de Nós (Trace)</h4>
+                      <button className="btn-link" onClick={() => setSelectedTrace(null)} style={{ color: 'var(--text-muted)' }}><X size={14} /></button>
+                    </div>
+                    <pre style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', maxHeight: '160px', overflowY: 'auto' }}>
+                      {JSON.stringify(selectedTrace, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* MODAL DE EDIÇÃO DE NÓ */}
+      {editingNode && (
+        <div className="modal-backdrop" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000 }}>
+          <div className="glass-panel animate-slide-in" style={{ width: '480px', padding: '24px', borderRadius: '12px', background: '#0d1423', border: '1px solid var(--accent-purple)', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+              <h3 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {getNodeIcon(editingNode.type)} Configurar Nó: {editingNode.name}
+              </h3>
+              <button className="btn-link" onClick={() => setEditingNode(null)} style={{ color: 'var(--text-muted)' }}><X size={16} /></button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Nome do Nó:</label>
+                <input 
+                  type="text" 
+                  value={editingNode.name} 
+                  onChange={e => setEditingNode({ ...editingNode, name: e.target.value })}
+                  style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '8px', color: 'var(--text-primary)', outline: 'none' }}
+                />
+              </div>
+
+              {editingNode.type === 'condition' && (
+                <>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Campo do JSON (payload.campo):</label>
+                    <input 
+                      type="text" 
+                      value={editingNode.config.field || ''} 
+                      onChange={e => setEditingNode({ ...editingNode, config: { ...editingNode.config, field: e.target.value } })}
+                      placeholder="ex: statusExame"
+                      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '8px', color: 'var(--text-primary)', outline: 'none' }}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Operador de Comparação:</label>
+                    <select 
+                      value={editingNode.config.operator || 'equals'} 
+                      onChange={e => setEditingNode({ ...editingNode, config: { ...editingNode.config, operator: e.target.value as any } })}
+                      style={{ background: '#0d1423', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '8px', color: 'var(--text-primary)', outline: 'none' }}
+                    >
+                      <option value="equals">Igual a (equals)</option>
+                      <option value="contains">Contém (contains)</option>
+                      <option value="not_empty">Não está vazio (not_empty)</option>
+                      <option value="greater_than">Maior que (greater_than)</option>
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Valor Esperado:</label>
+                    <input 
+                      type="text" 
+                      value={editingNode.config.value || ''} 
+                      onChange={e => setEditingNode({ ...editingNode, config: { ...editingNode.config, value: e.target.value } })}
+                      placeholder="ex: urgente"
+                      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '8px', color: 'var(--text-primary)', outline: 'none' }}
+                    />
+                  </div>
+                </>
+              )}
+
+              {editingNode.type === 'ai_skill' && (
+                <>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Skill de IA Responsável:</label>
+                    <select 
+                      value={editingNode.config.skillName || ''} 
+                      onChange={e => setEditingNode({ ...editingNode, config: { ...editingNode.config, skillName: e.target.value } })}
+                      style={{ background: '#0d1423', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '8px', color: 'var(--text-primary)', outline: 'none' }}
+                    >
+                      {skills.map(s => (
+                        <option key={s.name} value={s.name}>{s.title} ({s.name})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Instrução Adicional para a IA:</label>
+                    <textarea 
+                      value={editingNode.config.inputMapping || ''} 
+                      onChange={e => setEditingNode({ ...editingNode, config: { ...editingNode.config, inputMapping: e.target.value } })}
+                      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '8px', color: 'var(--text-primary)', outline: 'none', height: '80px', resize: 'none' }}
+                    />
+                  </div>
+                </>
+              )}
+
+              {editingNode.type === 'http_request' && (
+                <>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>URL de Destino:</label>
+                    <input 
+                      type="text" 
+                      value={editingNode.config.url || ''} 
+                      onChange={e => setEditingNode({ ...editingNode, config: { ...editingNode.config, url: e.target.value } })}
+                      placeholder="https://api.meusistema.com/webhook"
+                      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '8px', color: 'var(--text-primary)', outline: 'none' }}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '12px' }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => setEditingNode(null)}>Cancelar</button>
+              <button className="btn btn-primary btn-sm" onClick={() => handleSaveNodeConfig(editingNode)}>Salvar Alterações</button>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Estilos embutidos */}
-      <style>{`
-        .automations-dashboard-layout {
-          display: flex;
-          height: 100%;
-          overflow: hidden;
-          position: relative;
-          background: rgba(8, 12, 20, 0.4);
-          width: 100%;
-        }
-        .automations-main-pane {
-          flex: 1;
-          overflow-y: auto;
-          padding: 24px;
-          display: flex;
-          flex-direction: column;
-          gap: 28px;
-        }
-        .dashboard-header-bar {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          border-bottom: 1px solid var(--border-color);
-          padding-bottom: 16px;
-        }
-        .dashboard-title {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-        }
-        .dashboard-title h3 {
-          font-size: 1.1rem;
-          font-weight: 600;
-          color: var(--text-primary);
-        }
-        .dashboard-title p {
-          font-size: 0.8rem;
-          color: var(--text-muted);
-        }
-        .triggers-section h4, .logs-section h4 {
-          font-size: 0.95rem;
-          font-weight: 600;
-          color: var(--text-primary);
-          margin-bottom: 16px;
-        }
-        .empty-triggers-card {
-          padding: 30px;
-          text-align: center;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 12px;
-          background: rgba(13, 20, 35, 0.2);
-        }
-        .empty-triggers-card p {
-          font-size: 0.85rem;
-          color: var(--text-secondary);
-          font-weight: 500;
-        }
-        .empty-triggers-card span {
-          font-size: 0.75rem;
-          color: var(--text-muted);
-          max-width: 450px;
-          line-height: 1.4;
-        }
-        .triggers-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-          gap: 20px;
-        }
-        .trigger-card {
-          background: rgba(13, 20, 35, 0.4);
-          padding: 20px;
-          border-radius: 12px;
-          display: flex;
-          flex-direction: column;
-          gap: 14px;
-          transition: all var(--transition-fast);
-          border: 1px solid var(--border-color);
-        }
-        .trigger-card:hover {
-          border-color: rgba(139, 92, 246, 0.3);
-          box-shadow: 0 4px 20px rgba(139, 92, 246, 0.05);
-        }
-        .trigger-card.paused-card {
-          opacity: 0.65;
-          background: rgba(10, 10, 15, 0.2);
-        }
-        .trigger-card-header {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-        }
-        .trigger-icon-wrapper {
-          width: 36px;
-          height: 36px;
-          border-radius: 8px;
-          background: rgba(255,255,255,0.03);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          border: 1px solid var(--border-color);
-        }
-        .trigger-header-info {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-        .trigger-header-info h5 {
-          font-size: 0.9rem;
-          font-weight: 600;
-          color: var(--text-primary);
-        }
-        .trigger-skill-folder {
-          font-size: 0.7rem;
-          color: var(--text-muted);
-        }
-        .toggle-btn {
-          border: none;
-          border-radius: 30px;
-          padding: 4px 10px;
-          font-size: 0.65rem;
-          font-weight: 600;
-          cursor: pointer;
-          transition: all var(--transition-fast);
-        }
-        .toggle-btn.active {
-          background: rgba(16, 185, 129, 0.15);
-          color: var(--accent-green);
-          border: 1px solid rgba(16, 185, 129, 0.3);
-        }
-        .toggle-btn.paused {
-          background: rgba(244, 63, 94, 0.15);
-          color: var(--accent-pink);
-          border: 1px solid rgba(244, 63, 94, 0.3);
-        }
-        .trigger-desc {
-          font-size: 0.78rem;
-          color: var(--text-secondary);
-          line-height: 1.4;
-          min-height: 36px;
-          display: -webkit-box;
-          -webkit-line-clamp: 2;
-          -webkit-box-orient: vertical;
-          overflow: hidden;
-        }
-        .trigger-meta-details {
-          background: rgba(0,0,0,0.15);
-          border-radius: 8px;
-          padding: 10px 12px;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          border: 1px solid rgba(255,255,255,0.02);
-        }
-        .meta-detail-row {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          font-size: 0.75rem;
-        }
-        .meta-detail-row.vertical {
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 6px;
-        }
-        .detail-label {
-          color: var(--text-muted);
-        }
-        .detail-val {
-          color: var(--text-secondary);
-          font-weight: 500;
-        }
-        .detail-val.cron-val {
-          background: rgba(6, 182, 212, 0.08);
-          color: var(--accent-cyan);
-          padding: 2px 6px;
-          border-radius: 4px;
-          font-size: 0.7rem;
-        }
-        .webhook-copy-wrapper {
-          display: flex;
-          align-items: center;
-          width: 100%;
-          gap: 8px;
-        }
-        .webhook-copy-wrapper .detail-val {
-          flex: 1;
-          background: rgba(139, 92, 246, 0.08);
-          color: var(--accent-purple);
-          padding: 4px 8px;
-          border-radius: 4px;
-          font-size: 0.68rem;
-          min-width: 0;
-        }
-        .btn-copy-webhook {
-          background: rgba(255,255,255,0.05);
-          border: 1px solid var(--border-color);
-          border-radius: 4px;
-          padding: 4px 8px;
-          font-size: 0.65rem;
-          color: var(--text-secondary);
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          white-space: nowrap;
-        }
-        .btn-copy-webhook:hover {
-          background: rgba(255,255,255,0.1);
-          color: var(--text-primary);
-        }
-        .execution-status-tag {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 0.72rem;
-          font-weight: 500;
-        }
-        .trigger-actions {
-          margin-top: 4px;
-          display: flex;
-          gap: 10px;
-        }
-        .logs-table-container {
-          background: rgba(13, 20, 35, 0.2);
-          overflow-x: auto;
-          border-radius: 12px;
-          border: 1px solid var(--border-color);
-        }
-        .logs-table {
-          width: 100%;
-          border-collapse: collapse;
-          text-align: left;
-          font-size: 0.78rem;
-        }
-        .logs-table th, .logs-table td {
-          padding: 12px 16px;
-          border-bottom: 1px solid var(--border-color);
-        }
-        .logs-table th {
-          background: rgba(0,0,0,0.25);
-          color: var(--text-muted);
-          font-weight: 600;
-          font-size: 0.72rem;
-          text-transform: uppercase;
-        }
-        .logs-table tr:hover td {
-          background: rgba(255,255,255,0.01);
-        }
-        .log-type-badge {
-          font-size: 0.65rem;
-          font-weight: 600;
-          text-transform: uppercase;
-          padding: 2px 6px;
-          border-radius: 4px;
-        }
-        .log-type-badge.cron {
-          background: rgba(6, 182, 212, 0.1);
-          color: var(--accent-cyan);
-        }
-        .log-type-badge.webhook {
-          background: rgba(139, 92, 246, 0.1);
-          color: var(--accent-purple);
-        }
-        .log-type-badge.manual {
-          background: rgba(255,255,255,0.06);
-          color: var(--text-secondary);
-        }
-        .status-flex {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          text-transform: capitalize;
-        }
-        .empty-logs-text {
-          font-size: 0.78rem;
-          color: var(--text-muted);
-          font-style: italic;
-          text-align: center;
-          padding: 30px 0;
-        }
+      {/* MODAL DE ADICIONAR NÓ */}
+      {isAddNodeModalOpen && (
+        <div className="modal-backdrop" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000 }}>
+          <div className="glass-panel animate-slide-in" style={{ width: '400px', padding: '24px', borderRadius: '12px', background: '#0d1423', border: '1px solid var(--accent-purple)', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+              <h3 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)' }}>Adicionar Novo Nó de Etapa</h3>
+              <button className="btn-link" onClick={() => setIsAddNodeModalOpen(false)} style={{ color: 'var(--text-muted)' }}><X size={16} /></button>
+            </div>
 
-        /* Modal custom payload */
-        .modal-overlay {
-          position: fixed;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          background: rgba(0,0,0,0.7);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          z-index: 2000;
-        }
-        .modal-content {
-          background: rgba(13, 20, 35, 0.98);
-          border: 1px solid var(--accent-purple);
-          border-radius: 12px;
-          width: 450px;
-          max-width: 90%;
-          display: flex;
-          flex-direction: column;
-          box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-        }
-        .modal-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 16px 20px;
-          border-bottom: 1px solid var(--border-color);
-        }
-        .modal-header h4 {
-          font-size: 0.95rem;
-          font-weight: 600;
-          color: var(--text-primary);
-        }
-        .btn-close-modal {
-          background: none;
-          border: none;
-          color: var(--text-muted);
-          cursor: pointer;
-        }
-        .modal-body {
-          padding: 20px;
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-        }
-        .modal-desc {
-          font-size: 0.78rem;
-          color: var(--text-secondary);
-          line-height: 1.4;
-        }
-        .payload-textarea {
-          width: 100%;
-          background: #090d16;
-          border: 1px solid var(--border-color);
-          border-radius: 6px;
-          padding: 10px;
-          font-size: 0.75rem;
-          resize: none;
-          color: #c9d1d9;
-          outline: none;
-        }
-        .payload-textarea:focus {
-          border-color: var(--accent-purple);
-        }
-        .modal-footer {
-          display: flex;
-          justify-content: flex-end;
-          gap: 10px;
-          padding: 16px 20px;
-          border-top: 1px solid var(--border-color);
-        }
-      `}</style>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Tipo de Nó:</label>
+              
+              <div 
+                onClick={() => setNewNodeType('condition')}
+                style={{ padding: '12px', borderRadius: '8px', border: newNodeType === 'condition' ? '1px solid var(--accent-cyan)' : '1px solid var(--border-color)', background: newNodeType === 'condition' ? 'rgba(6, 182, 212, 0.1)' : 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px' }}
+              >
+                <GitBranch size={18} style={{ color: 'var(--accent-cyan)' }} />
+                <div>
+                  <h4 style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)' }}>Filtro Condicional (IF)</h4>
+                  <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Desvia ou filtra o fluxo baseado nos campos do JSON.</p>
+                </div>
+              </div>
+
+              <div 
+                onClick={() => setNewNodeType('ai_skill')}
+                style={{ padding: '12px', borderRadius: '8px', border: newNodeType === 'ai_skill' ? '1px solid var(--accent-purple)' : '1px solid var(--border-color)', background: newNodeType === 'ai_skill' ? 'rgba(139, 92, 246, 0.1)' : 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px' }}
+              >
+                <Bot size={18} style={{ color: 'var(--accent-purple)' }} />
+                <div>
+                  <h4 style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)' }}>Executar Skill de IA</h4>
+                  <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Executa um playbook da IA com os dados recebidos.</p>
+                </div>
+              </div>
+
+              <div 
+                onClick={() => setNewNodeType('http_request')}
+                style={{ padding: '12px', borderRadius: '8px', border: newNodeType === 'http_request' ? '1px solid var(--accent-green)' : '1px solid var(--border-color)', background: newNodeType === 'http_request' ? 'rgba(16, 185, 129, 0.1)' : 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px' }}
+              >
+                <Send size={18} style={{ color: 'var(--accent-green)' }} />
+                <div>
+                  <h4 style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)' }}>Webhook HTTP de Saída</h4>
+                  <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Envia o resultado para uma API ou sistema externo.</p>
+                </div>
+              </div>
+
+              <div 
+                onClick={() => setNewNodeType('log_notify')}
+                style={{ padding: '12px', borderRadius: '8px', border: newNodeType === 'log_notify' ? '1px solid #60a5fa' : '1px solid var(--border-color)', background: newNodeType === 'log_notify' ? 'rgba(96, 165, 250, 0.1)' : 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px' }}
+              >
+                <Bell size={18} style={{ color: '#60a5fa' }} />
+                <div>
+                  <h4 style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)' }}>Log / Alerta do Sistema</h4>
+                  <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Grava notificação nos logs internos de auditoria.</p>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '12px' }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => setIsAddNodeModalOpen(false)}>Cancelar</button>
+              <button className="btn btn-primary btn-sm" onClick={handleAddNodeSubmit}>Inserir Nó no Fluxo</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE CRIAR NOVO WORKFLOW */}
+      {isCreateWorkflowModalOpen && (
+        <div className="modal-backdrop" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000 }}>
+          <form onSubmit={handleCreateWorkflow} className="glass-panel animate-slide-in" style={{ width: '420px', padding: '24px', borderRadius: '12px', background: '#0d1423', border: '1px solid var(--accent-purple)', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+              <h3 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)' }}>Criar Novo Workflow de Automação</h3>
+              <button type="button" className="btn-link" onClick={() => setIsCreateWorkflowModalOpen(false)} style={{ color: 'var(--text-muted)' }}><X size={16} /></button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Nome do Workflow:</label>
+                <input 
+                  type="text" 
+                  value={newWfName}
+                  onChange={e => setNewWfName(e.target.value)}
+                  placeholder="ex: Processamento de Receitas Hospitalares"
+                  required
+                  style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '8px', color: 'var(--text-primary)', outline: 'none' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Descrição do Objetivo:</label>
+                <textarea 
+                  value={newWfDesc}
+                  onChange={e => setNewWfDesc(e.target.value)}
+                  placeholder="Descreva o que este fluxo de automação realiza..."
+                  style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '8px', color: 'var(--text-primary)', outline: 'none', height: '70px', resize: 'none' }}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '12px' }}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setIsCreateWorkflowModalOpen(false)}>Cancelar</button>
+              <button type="submit" className="btn btn-primary btn-sm">Criar e Abrir Canvas</button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 };

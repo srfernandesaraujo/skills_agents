@@ -867,7 +867,11 @@ function App() {
         ) : activeTab === 'gallery' ? (
           <TemplatesGallery backendUrl={backendUrl} installedSkills={skills} onSkillInstalled={loadSkills} />
         ) : (
-          <IntegrationPanel skills={skills} backendUrl={backendUrl} />
+          <IntegrationPanel 
+            skills={skills} 
+            backendUrl={backendUrl} 
+            onActivateMultiSkills={() => setActiveTab('agent')}
+          />
         )}
       </main>
 

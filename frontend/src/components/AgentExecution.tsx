@@ -185,6 +185,26 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
   // Estado da Skill Ativa carregada no Agente
   const [activeSkillName, setActiveSkillName] = useState<string | null>(null);
   const [activeSkillDetail, setActiveSkillDetail] = useState<SkillDetail | null>(null);
+  const [activeMultiSkills, setActiveMultiSkills] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('active_multi_skills');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    const handleStorageChange = () => {
+      try {
+        const saved = localStorage.getItem('active_multi_skills');
+        setActiveMultiSkills(saved ? JSON.parse(saved) : []);
+      } catch {}
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
   
   // Status flutuantes de background
   const [currentStep, setCurrentStep] = useState<ExecutionStep | null>(null);
@@ -361,6 +381,7 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
         body: JSON.stringify({
           messages: updatedMessages.map(m => ({ role: m.role, content: m.content })),
           activeSkillName,
+          activeSkillNames: activeMultiSkills.length > 0 ? activeMultiSkills : (activeSkillName ? [activeSkillName] : []),
           apiKey,
           fileData: fileToSend?.base64 || null,
           fileMime: fileToSend?.mimeType || null,
@@ -454,6 +475,7 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
         body: JSON.stringify({
           messages: messages.map(m => ({ role: m.role, content: m.content })),
           activeSkillName,
+          activeSkillNames: activeMultiSkills.length > 0 ? activeMultiSkills : (activeSkillName ? [activeSkillName] : []),
           apiKey,
           fileData: null,
           fileMime: null,
@@ -861,6 +883,28 @@ export const AgentExecution: React.FC<AgentExecutionProps> = ({
               <span className="badge-text">{currentStep.detail}</span>
               <button className="badge-close" onClick={() => setCurrentStep(null)}>×</button>
             </div>
+          </div>
+        )}
+
+        {/* Banner de Agente Multi-Skill Ativo */}
+        {activeMultiSkills.length > 0 && (
+          <div style={{ padding: '10px 16px', background: 'rgba(139, 92, 246, 0.12)', borderBottom: '1px solid rgba(139, 92, 246, 0.3)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Sparkles size={16} className="text-purple pulse" />
+              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                ⚡ Agente Multi-Skill Ativo ({activeMultiSkills.length} skills): {activeMultiSkills.join(', ')}
+              </span>
+            </div>
+            <button 
+              className="btn-link"
+              style={{ fontSize: '0.75rem', color: '#f87171' }}
+              onClick={() => {
+                setActiveMultiSkills([]);
+                localStorage.removeItem('active_multi_skills');
+              }}
+            >
+              Desativar Modo Multi-Skill
+            </button>
           </div>
         )}
 

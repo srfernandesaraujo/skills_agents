@@ -1067,6 +1067,34 @@ export async function saveSystemAutomationLogs(jobs) {
   return false;
 }
 
+export async function getSystemWorkflows() {
+  if (useFirebase && db) {
+    const doc = await db.collection('system').doc('automation_workflows').get();
+    return doc.exists ? doc.data().workflows || null : null;
+  }
+  const localFile = path.join(__dirname, 'automation_workflows.json');
+  if (fs.existsSync(localFile)) {
+    try {
+      const content = fs.readFileSync(localFile, 'utf8');
+      return JSON.parse(content);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+export async function saveSystemWorkflows(workflows) {
+  if (useFirebase && db) {
+    await db.collection('system').doc('automation_workflows').set({ workflows });
+    return true;
+  }
+  const localFile = path.join(__dirname, 'automation_workflows.json');
+  fs.writeFileSync(localFile, JSON.stringify(workflows, null, 2));
+  return true;
+}
+
+
 export async function downloadBinaryFile(name, filePath) {
   const cleanPath = (filePath || '').replace(/^\/+/, '');
   if (useFirebase && bucket) {

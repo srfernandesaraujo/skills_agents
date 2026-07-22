@@ -1,15 +1,26 @@
-import React, { useState } from 'react';
-import { Copy, Check, Box, Code } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Copy, Check, Box, Code, Layers, Sparkles } from 'lucide-react';
 import type { SkillSummary } from './FileTree';
 
 interface IntegrationPanelProps {
   skills: SkillSummary[];
   backendUrl: string;
+  onActivateMultiSkills?: (skillNames: string[]) => void;
 }
 
-export const IntegrationPanel: React.FC<IntegrationPanelProps> = ({ skills, backendUrl }) => {
+export const IntegrationPanel: React.FC<IntegrationPanelProps> = ({ skills, backendUrl, onActivateMultiSkills }) => {
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [copiedFormat, setCopiedFormat] = useState<'text' | 'json' | null>(null);
+  const [activatedMulti, setActivatedMulti] = useState(false);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('active_multi_skills');
+      if (saved) {
+        setSelectedSkills(JSON.parse(saved));
+      }
+    } catch (e) {}
+  }, []);
 
   const toggleSkillSelection = (skillName: string) => {
     setSelectedSkills(prev => 
@@ -17,14 +28,27 @@ export const IntegrationPanel: React.FC<IntegrationPanelProps> = ({ skills, back
         ? prev.filter(name => name !== skillName)
         : [...prev, skillName]
     );
+    setActivatedMulti(false);
   };
 
   const selectAll = () => {
     setSelectedSkills(skills.map(s => s.name));
+    setActivatedMulti(false);
   };
 
   const selectNone = () => {
     setSelectedSkills([]);
+    setActivatedMulti(false);
+    localStorage.removeItem('active_multi_skills');
+  };
+
+  const handleActivateForInternalAgent = () => {
+    const listToActivate = selectedSkills.length > 0 ? selectedSkills : skills.map(s => s.name);
+    localStorage.setItem('active_multi_skills', JSON.stringify(listToActivate));
+    setActivatedMulti(true);
+    if (onActivateMultiSkills) {
+      onActivateMultiSkills(listToActivate);
+    }
   };
 
   // Filtra as skills selecionadas ou usa todas se nenhuma estiver selecionada
@@ -78,7 +102,7 @@ Você tem acesso às seguintes Skills estruturadas locais (playbooks). Quando re
     <div className="integration-container animate-slide-in">
       <div className="integration-header-section">
         <h2>Catálogo de Integração</h2>
-        <p>Gere e copie as instruções necessárias para injetar suas Skills em Agentes Externos (N8N, GPTs, Claude Projects ou Dify).</p>
+        <p>Combine skills para o seu Agente Interno ou exporte instruções para Agentes Externos (N8N, GPTs, Claude Projects ou Dify).</p>
       </div>
 
       <div className="integration-content">
@@ -121,8 +145,36 @@ Você tem acesso às seguintes Skills estruturadas locais (playbooks). Quando re
           )}
         </div>
 
-        {/* Lado Direito: Resultados Gerados (Instruções de Injeção) */}
+        {/* Lado Direito: Opção de Uso Interno Multi-Skill + Exportações */}
         <div className="prompts-generator-pane">
+          {/* BLOCO NOVO: Ativação de Combinação no Agente Interno do Sistema */}
+          <div className="prompt-block glass-panel" style={{ border: '1px solid rgba(139, 92, 246, 0.4)', background: 'rgba(139, 92, 246, 0.05)' }}>
+            <div className="prompt-block-header">
+              <div className="prompt-block-title">
+                <Layers size={18} className="text-purple pulse" />
+                <h4>Usar Combinação no Agente Interno do Sistema</h4>
+              </div>
+              <button 
+                className="btn btn-primary btn-sm"
+                onClick={handleActivateForInternalAgent}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                {activatedMulti ? <Check size={14} /> : <Sparkles size={14} />}
+                {activatedMulti ? 'Combinação Ativada!' : 'Ativar no Agente Interno'}
+              </button>
+            </div>
+            <p className="block-instruction-text">
+              Ao ativar, o seu Agente Executivo interno unificará os playbooks, regras e ferramentas das <strong>{activeSkills.length} skills selecionadas</strong> para atender a solicitações complexas simultaneamente.
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '10px' }}>
+              {activeSkills.map(s => (
+                <span key={s.name} style={{ background: 'rgba(139, 92, 246, 0.2)', border: '1px solid rgba(139, 92, 246, 0.4)', padding: '4px 10px', borderRadius: '16px', fontSize: '0.75rem', color: 'var(--text-primary)' }}>
+                  ⚡ {s.title}
+                </span>
+              ))}
+            </div>
+          </div>
+
           {/* Opção 1: System Prompt em Texto */}
           <div className="prompt-block glass-panel">
             <div className="prompt-block-header">
