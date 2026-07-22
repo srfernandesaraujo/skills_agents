@@ -1274,6 +1274,60 @@ export async function getConversation(conversationId, userId) {
   }
 }
 
+export async function getAnyConversation(conversationId) {
+  if (useFirebase && db) {
+    const doc = await db.collection('conversations').doc(conversationId).get();
+    if (!doc.exists) return null;
+    return { id: doc.id, ...doc.data() };
+  } else {
+    const filePath = path.join(CONVERSATIONS_DIR, `${conversationId}.json`);
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(content);
+  }
+}
+
+export async function listAllConversations() {
+  if (useFirebase && db) {
+    const snapshot = await db.collection('conversations').get();
+    const list = [];
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      list.push({
+        id: doc.id,
+        userId: data.userId,
+        skillName: data.skillName,
+        title: data.title,
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt
+      });
+    });
+    return list.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  } else {
+    const list = [];
+    if (fs.existsSync(CONVERSATIONS_DIR)) {
+      const files = fs.readdirSync(CONVERSATIONS_DIR);
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        try {
+          const filePath = path.join(CONVERSATIONS_DIR, file);
+          const content = fs.readFileSync(filePath, 'utf8');
+          const data = JSON.parse(content);
+          list.push({
+            id: data.id,
+            userId: data.userId,
+            skillName: data.skillName,
+            title: data.title,
+            createdAt: data.createdAt,
+            updatedAt: data.updatedAt
+          });
+        } catch (e) {}
+      }
+    }
+    return list.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  }
+}
+
 export async function saveConversation(conversationId, userId, skillName, title, messages) {
   const updatedAt = new Date().toISOString();
   if (useFirebase && db) {

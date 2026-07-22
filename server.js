@@ -550,18 +550,19 @@ app.get('/api/skills/:name/media', async (req, res) => {
     if (!buffer && (ext === '.html' || ext === '.htm' || ext === '.txt' || ext === '.js' || ext === '.css')) {
       try {
         console.log(`[MEDIA FALLBACK] Buscando protótipo HTML gerado em conversas para ${name}:${filePath}...`);
-        const convList = await storage.listConversations(req.user?.uid || 'system');
-        for (const conv of (convList || []).slice(0, 15)) {
-          const fullConv = await storage.getConversation(conv.id, req.user?.uid || 'system');
+        const convList = await storage.listAllConversations();
+        for (const conv of (convList || []).slice(0, 20)) {
+          const fullConv = await storage.getAnyConversation(conv.id);
           if (fullConv && fullConv.messages) {
             for (const msg of [...fullConv.messages].reverse()) {
               if (msg.role === 'assistant' && msg.content) {
-                const codeMatch = msg.content.match(/```(?:html|xml)?\s*([\s\S]*?)```/i);
+                const codeMatch = msg.content.match(/(?:```(?:html|xml)?\s*)?((?:<!DOCTYPE html|<html)[\s\S]*?(?:<\/html>|\n<\/div>|\n<\/body>|\n\s*```|$))/i)
+                               || msg.content.match(/```(?:html|xml)?\s*([\s\S]*?)```/i);
                 if (codeMatch && codeMatch[1] && (codeMatch[1].includes('<html') || codeMatch[1].includes('<!DOCTYPE') || codeMatch[1].includes('<div'))) {
-                  const htmlCode = codeMatch[1].trim();
+                  let htmlCode = codeMatch[1].replace(/```$/, '').trim();
                   await storage.saveFile(name, filePath, htmlCode);
                   buffer = Buffer.from(htmlCode, 'utf8');
-                  console.log(`[MEDIA FALLBACK] Protótipo '${filePath}' recuperado das mensagens e salvo no Storage!`);
+                  console.log(`[MEDIA FALLBACK] Protótipo '${filePath}' recuperado da conversa '${conv.id}' e salvo no Storage!`);
                   break;
                 }
               }
@@ -2396,16 +2397,27 @@ INSTRUÇÕES PÓS-EXECUÇÃO:
     if (finalReply) {
       try {
         const linkRegex = /\[(?:[^\]]+)\]\(\/api\/skills\/([^\/]+)\/media\?path=([^)]+)\)/gi;
-        const codeBlockRegex = /```(?:html|xml)?\s*([\s\S]*?)```/gi;
+        const htmlDocRegex = /(?:```(?:html|xml)?\s*)?((?:<!DOCTYPE html|<html)[\s\S]*?(?:<\/html>|\n<\/div>|\n<\/body>|\n\s*```|$))/i;
+        const fallbackCodeBlockRegex = /```(?:html|xml)?\s*([\s\S]*?)```/gi;
+
         let linkMatch;
         while ((linkMatch = linkRegex.exec(finalReply)) !== null) {
           const targetSkill = linkMatch[1];
           const targetPath = decodeURIComponent(linkMatch[2]);
 
-          codeBlockRegex.lastIndex = 0;
-          const codeMatch = codeBlockRegex.exec(finalReply);
-          if (codeMatch && codeMatch[1] && (codeMatch[1].includes('<html') || codeMatch[1].includes('<!DOCTYPE') || codeMatch[1].includes('<div'))) {
-            const htmlContent = codeMatch[1].trim();
+          let htmlContent = null;
+          const docMatch = finalReply.match(htmlDocRegex);
+          if (docMatch && docMatch[1] && (docMatch[1].includes('<html') || docMatch[1].includes('<!DOCTYPE') || docMatch[1].includes('<div'))) {
+            htmlContent = docMatch[1].replace(/```$/, '').trim();
+          } else {
+            fallbackCodeBlockRegex.lastIndex = 0;
+            const codeMatch = fallbackCodeBlockRegex.exec(finalReply);
+            if (codeMatch && codeMatch[1]) {
+              htmlContent = codeMatch[1].trim();
+            }
+          }
+
+          if (htmlContent) {
             console.log(`[AUTO-SAVE MEDIA] Salvando protótipo em ${targetSkill}:${targetPath}...`);
             await storage.saveFile(targetSkill, targetPath, htmlContent);
             steps.push({ step: 'file_saved', detail: `Protótipo '${targetPath}' salvo no Storage.` });
