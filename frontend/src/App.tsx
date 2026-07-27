@@ -39,20 +39,16 @@ function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || (import.meta.env.VITE_GEMINI_API_KEY as string) || '');
   const [sdkApiKey, setSdkApiKey] = useState(() => localStorage.getItem('sdk_api_key') || '');
   
-  // Define o backend URL padrão: localhost para desenvolvimento local, ou https://skills-backend.posologia.app no servidor caseiro
+  // Conforme o Playbook: Em produção (compilado), usa rotas relativas ("") para a mesma origem do server.js. Em dev (Vite), aponta para o Node local.
   const [backendUrl, setBackendUrl] = useState(() => {
+    if (import.meta.env.PROD) {
+      return '';
+    }
     const saved = localStorage.getItem('backend_url');
-    if (saved && !saved.includes('skills_backend.posologia.app')) {
+    if (saved && !saved.includes('posologia.app') && !saved.includes('skills_backend')) {
       return saved.trim().replace(/\/+$/, '');
     }
-    const envUrl = import.meta.env.VITE_API_URL as string;
-    if (envUrl && !envUrl.includes('skills_backend.posologia.app')) {
-      return envUrl.trim().replace(/\/+$/, '');
-    }
-    
-    // Se estiver rodando local em porta de dev (ex: vite 5173), aponta pro Node local (3001). Caso contrário, aponta para o backend do servidor caseiro (skills-backend.posologia.app)
-    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    return isLocalhost ? 'http://localhost:3001' : 'https://skills-backend.posologia.app';
+    return 'http://localhost:3001';
   });
 
   const [hasGlobalApiKey, setHasGlobalApiKey] = useState(false);
@@ -116,8 +112,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const saved = localStorage.getItem('backend_url');
-    if (saved && saved.includes('posologia.app')) {
+    if (import.meta.env.PROD) {
       localStorage.removeItem('backend_url');
     }
   }, []);
