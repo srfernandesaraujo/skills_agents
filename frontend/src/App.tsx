@@ -46,9 +46,9 @@ function App() {
     const envUrl = import.meta.env.VITE_API_URL as string;
     if (envUrl) return envUrl.trim().replace(/\/+$/, '');
     
-    // Se estiver rodando local no browser, aponta pro Node local. Caso contrário (celular/tablet/etc.), aponta pro Render
+    // Se estiver rodando local no browser, aponta pro Node local. Caso contrário (celular/tablet/etc.), aponta pro servidor caseiro
     const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    return isLocalhost ? 'http://localhost:3001' : 'https://skills-agents-backend.onrender.com';
+    return isLocalhost ? 'http://localhost:3001' : 'https://skills_backend.posologia.app';
   });
 
   const [hasGlobalApiKey, setHasGlobalApiKey] = useState(false);
