@@ -39,16 +39,20 @@ function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || (import.meta.env.VITE_GEMINI_API_KEY as string) || '');
   const [sdkApiKey, setSdkApiKey] = useState(() => localStorage.getItem('sdk_api_key') || '');
   
-  // Conforme o Playbook: Em produção (compilado), usa rotas relativas ("") para a mesma origem do server.js. Em dev (Vite), aponta para o Node local.
+  // Define o backend URL padrão: localhost para desenvolvimento local, VITE_API_URL ou https://skills-api.posologia.app em produção (Cloudflare Pages)
   const [backendUrl, setBackendUrl] = useState(() => {
-    if (import.meta.env.PROD) {
-      return '';
+    const envUrl = import.meta.env.VITE_API_URL as string;
+    if (envUrl) {
+      return envUrl.trim().replace(/\/+$/, '');
     }
     const saved = localStorage.getItem('backend_url');
-    if (saved && !saved.includes('posologia.app') && !saved.includes('skills_backend')) {
+    if (saved && !saved.includes('skills_backend.posologia.app')) {
       return saved.trim().replace(/\/+$/, '');
     }
-    return 'http://localhost:3001';
+    
+    // Se estiver rodando local no dev server Vite (5173), aponta pro Node local. Caso contrário, aponta pro backend API das Skills no servidor caseiro
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    return isLocalhost ? 'http://localhost:3001' : 'https://skills-api.posologia.app';
   });
 
   const [hasGlobalApiKey, setHasGlobalApiKey] = useState(false);
