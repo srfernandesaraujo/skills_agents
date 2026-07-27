@@ -39,20 +39,20 @@ function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || (import.meta.env.VITE_GEMINI_API_KEY as string) || '');
   const [sdkApiKey, setSdkApiKey] = useState(() => localStorage.getItem('sdk_api_key') || '');
   
-  // Define o backend URL padrão: localhost para desenvolvimento, ou servidor caseiro (skills-backend.posologia.app) em produção
+  // Define o backend URL padrão: localhost para desenvolvimento, ou a própria origem (window.location.origin) em produção
   const [backendUrl, setBackendUrl] = useState(() => {
     const saved = localStorage.getItem('backend_url');
-    if (saved && !saved.includes('skills_backend.posologia.app')) {
+    if (saved && !saved.includes('posologia.app')) {
       return saved.trim().replace(/\/+$/, '');
     }
     const envUrl = import.meta.env.VITE_API_URL as string;
-    if (envUrl && !envUrl.includes('skills_backend.posologia.app')) {
+    if (envUrl && !envUrl.includes('posologia.app')) {
       return envUrl.trim().replace(/\/+$/, '');
     }
     
-    // Se estiver rodando local em porta de dev (ex: vite 5173), aponta pro Node local (3001). Caso contrário, aponta para o servidor caseiro com hífen
+    // Se estiver rodando local em porta de dev (ex: vite 5173), aponta pro Node local (3001). Caso contrário, usa a própria origem acessada
     const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    return isLocalhost ? 'http://localhost:3001' : 'https://skills-backend.posologia.app';
+    return isLocalhost ? 'http://localhost:3001' : window.location.origin;
   });
 
   const [hasGlobalApiKey, setHasGlobalApiKey] = useState(false);
@@ -117,7 +117,7 @@ function App() {
 
   useEffect(() => {
     const saved = localStorage.getItem('backend_url');
-    if (saved && saved.includes('skills_backend.posologia.app')) {
+    if (saved && saved.includes('posologia.app')) {
       localStorage.removeItem('backend_url');
     }
   }, []);
