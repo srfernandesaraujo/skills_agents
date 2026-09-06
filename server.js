@@ -813,9 +813,18 @@ O usuário deseja criar uma nova Skill de IA com as seguintes especificações:
 - Suporta Arquivos (Multimodal): ${needsFiles ? 'Sim' : 'Não'}
 - Executa Scripts (Tools): ${needsTools ? 'Sim' : 'Não'}
 
+### PRINCÍPIOS DE ENGENHARIA DE SKILL (aplique a todo o pacote gerado)
+
+1. **Divulgação progressiva**: o skill.md é carregado inteiro toda vez que a Skill é usada, então ele deve funcionar como um manual operacional enxuto — papel do agente, princípios, fluxo passo a passo e limites. Conhecimento denso e extenso (bancos de casos, tabelas de referência longas, roteiros completos) pertence aos arquivos de /dados, não ao skill.md. Se o skill.md começar a ficar longo demais, é sinal de que aquele conteúdo deveria virar um arquivo de referência.
+2. **Explique o porquê, não apenas o quê**: ao escrever restrições e regras de comportamento, prefira frases que expliquem o motivo/risco por trás da regra em vez de listas secas de MUST/NEVER em caixa alta. Um modelo de execução que entende a razão generaliza melhor para situações não previstas do que um que só decora proibições.
+3. **Ancore com exemplos concretos**: inclua no skill.md pelo menos um exemplo real de interação (ex: "Entrada do usuário: ... → Resposta esperada do agente: ...") ou um exemplo de estrutura de relatório/saída preenchido. Exemplos concretos evitam ambiguidade muito melhor do que instruções abstratas.
+4. **Descrição precisa e discriminante**: a "description" do frontmatter deve deixar claro, em 1 frase, o que a Skill faz e em qual situação específica ela é a escolha certa — pense em como um usuário navegando por uma lista de várias Skills parecidas saberia qual delas abrir. Escreva no imperativo, focado na intenção do usuário ("Audita receituários hospitalares em busca de..." em vez de "Esta skill é capaz de auditar..."), priorizando o que o usuário quer alcançar em vez de detalhes de implementação. Ela compete por atenção com as descrições de outras Skills da lista — torne-a distintiva, e não uma generalização que serviria para qualquer Skill do mesmo tema.
+5. **Princípio da ausência de surpresa**: nunca gere conteúdo, persona ou instrução que possa enganar o usuário final, driblar validação humana em decisões críticas (ex: saúde, dados sensíveis) ou automatizar ações não solicitadas. Sempre que o tema envolver risco (clínico, financeiro, legal), inclua explicitamente quando a Skill deve parar e pedir revisão humana.
+6. **Sem gabarito genérico**: NÃO force tabelas comparativas genéricas (como "tradicional vs excelência"), cronogramas arbitrários ou seções que não fizerem sentido para o tema. Adapte a estrutura ao cenário real da Skill em vez de repetir um template engessado.
+
 Sua tarefa é gerar uma estrutura completa de arquivos em formato JSON válido:
 {
-  "skillMd": "O conteúdo do arquivo principal skill.md em markdown completo. Deve ser adaptado à temática da Skill, evitando templates engessados ou repetitivos. O playbook DEVE conter: frontmatter YAML no topo; uma introdução clara ao papel do agente; uma seção de 'Princípios Centrais' ou 'Diretrizes de Execução'; um fluxo operacional/conversacional passo a passo detalhando como a interação ou raciocínio deve se desdobrar turno a turno ou etapa por etapa (incluindo exemplos de relatórios, rubricas ou estruturas de outputs que o agente deve gerar); e uma seção contendo regras críticas de 'O que esta Skill NUNCA faz' (definindo limites claros, salvaguardas contra suposições e momentos exatos para requisitar revisão humana ou sinalizar lacunas). NÃO force tabelas comparativas genéricas (como tradicional vs excelência) ou cronogramas arbitrários, a menos que sejam pertinentes ao tema.",
+  "skillMd": "O conteúdo do arquivo principal skill.md em markdown completo, seguindo os PRINCÍPIOS DE ENGENHARIA DE SKILL acima. O playbook DEVE conter: frontmatter YAML no topo (com uma 'description' precisa e discriminante); uma introdução clara ao papel do agente; uma seção de 'Princípios Centrais' ou 'Diretrizes de Execução' que explique o racional de cada regra; um fluxo operacional/conversacional passo a passo detalhando como a interação ou raciocínio deve se desdobrar turno a turno ou etapa por etapa, com pelo menos um exemplo concreto de entrada/saída; e uma seção contendo regras críticas de 'O que esta Skill NUNCA faz' (definindo limites claros, salvaguardas contra suposições e momentos exatos para requisitar revisão humana ou sinalizar lacunas).",
   "readmes": {
     "dados": "Conteúdo em markdown do dados/LEIA-ME.md específico para o tema, listando quais arquivos do mundo real (como diretrizes, consensos, ementas) são recomendados inserir.",
     "assets": "Conteúdo em markdown do assets/LEIA-ME.md orientando quais esquemas visuais, fluxogramas de decisão ou mídias são recomendados inserir.",
@@ -824,7 +833,7 @@ Sua tarefa é gerar uma estrutura completa de arquivos em formato JSON válido:
   "references": [
     {
       "path": "dados/nome-do-arquivo.md",
-      "content": "Conteúdo completo em markdown para este arquivo de referência. O arquivo deve ser extremamente detalhado e aprofundado, cobrindo o tema (ex: banco de casos clínicos detalhados com histórias e personalidades, roteiros de atendimento completos, tabelas de referência clínica, rubricas de avaliação pedagógica estruturadas, técnicas de comunicação avançadas, etc.)."
+      "content": "Conteúdo completo em markdown para este arquivo de referência. É aqui, e não no skill.md, que deve morar o conhecimento denso e extenso: banco de casos clínicos detalhados com histórias e personalidades, roteiros de atendimento completos, tabelas de referência clínica, rubricas de avaliação pedagógica estruturadas, técnicas de comunicação avançadas, etc."
     }
   ]
 }
@@ -1195,28 +1204,40 @@ Antes de executar, confirme com o usuário o que for essencial para a personaliz
 
     // Injeta instruções de sistema adicionais no início para garantir retorno JSON estruturado
     const systemInstruction = `Você é um Engenheiro de Software e Arquiteto de IA Sênior especializado em criar Playbooks de Instrução de Sistema ("AI Skills") extremamente robustos, de nível profissional e detalhados.
-Sua tarefa é criar um playbook estruturado em Markdown para uma "Skill de IA" com base na requisição do usuário.
+Sua tarefa é conduzir o usuário na criação de um playbook estruturado em Markdown para uma "Skill de IA".
 Você DEVE SEMPRE responder no formato JSON válido. O formato JSON esperado é:
 {
-  "text": "Mensagem amigável explicando o que você gerou, destacando o nível de profundidade inserido no playbook.",
+  "text": "Mensagem amigável para o usuário: ou perguntas de esclarecimento, ou a explicação do que você gerou.",
   "skillData": {
     "name": "nome-da-skill-slugificado (usar apenas minúsculas, números e hifens)",
     "title": "Título da Skill de IA",
-    "description": "Uma descrição concisa de 1 linha sobre o que esta Skill realiza.",
+    "description": "Uma descrição concisa e discriminante de 1 linha sobre o que esta Skill realiza.",
     "markdown": "O conteúdo do arquivo skill.md em markdown completo."
   }
 }
 
 Use exatamente essa estrutura de JSON e nada mais. Não inclua blocos de código markdown (como \`\`\`json ...) na raiz, apenas envie o JSON puro ou use markdown dentro do campo \"markdown\". Responda sempre em Português do Brasil (pt-BR).
 
-### DIRETRIZES DE EXCELÊNCIA PARA O CONTEÚDO DO PLAYBOOK (skill.md):
-Para que a Skill gerada seja profissional, rica e sob medida para o tema do usuário, ela deve ser adaptada à sua finalidade real em vez de seguir um template rígido de seções. O Markdown gerado DEVE incluir:
+### PASSO 0 — ENTREVISTA ANTES DE GERAR
+Antes de produzir o playbook final, avalie se o histórico da conversa já contém o essencial: o papel/persona do agente, o público-alvo, o formato de saída esperado (relatório, chat livre, tabela, etc.) e quaisquer restrições críticas do domínio (ex: dado sensível, necessidade de validação humana). Um playbook gerado sobre uma premissa errada custa mais retrabalho do que uma pergunta a mais.
+- Se a mensagem do usuário for vaga ou faltar algo essencial para um playbook de qualidade, OMITA o campo "skillData" (não o inclua no JSON) e use "text" para fazer no máximo 2-3 perguntas objetivas e específicas ao tema — nunca perguntas genéricas como "pode dar mais detalhes?".
+- Se o histórico da conversa já reúne informação suficiente (seja porque o pedido já era detalhado, seja porque o usuário respondeu às suas perguntas), gere o "skillData" completo diretamente, sem pedir confirmação adicional.
+
+### PRINCÍPIOS DE ENGENHARIA DE SKILL (aplique ao redigir o markdown)
+
+1. **Divulgação progressiva**: o skill.md é lido por inteiro toda vez que a Skill roda, então deve funcionar como um manual operacional enxuto e focado — papel, princípios, fluxo e limites. Se o tema pedir uma base de conhecimento extensa (bancos de casos, tabelas de referência longas), não tente espremer tudo isso no markdown: gere a Skill mesmo assim e diga ao usuário, no campo "text", quais arquivos de referência adicionais valeria a pena anexar depois em /dados.
+2. **Explique o porquê, não apenas o quê**: prefira frases que expliquem o motivo/risco por trás de cada regra em vez de listas secas de MUST/NEVER em caixa alta — isso ajuda o modelo de execução a generalizar para casos não previstos.
+3. **Ancore com exemplos concretos**: inclua no skill.md pelo menos um exemplo real de interação (ex: "Entrada do usuário: ... → Resposta esperada do agente: ...") para reduzir ambiguidade.
+4. **Descrição precisa e discriminante**: a "description" (no JSON e no frontmatter) deve deixar claro em 1 frase o que a Skill faz e quando ela é a escolha certa, pensando em alguém navegando por uma lista de Skills parecidas. Escreva no imperativo e focado na intenção do usuário, não em detalhes de implementação, e torne-a distintiva frente a outras Skills — evite frases genéricas que serviriam para qualquer Skill do mesmo tema.
+5. **Princípio da ausência de surpresa**: nunca gere conteúdo, persona ou instrução que possa enganar o usuário final ou automatizar decisões críticas (saúde, dados sensíveis, finanças) sem checkpoint de revisão humana explícito no playbook.
+6. **Sem gabarito genérico**: não force tabelas comparativas genéricas, cronogramas arbitrários ou seções que não fizerem sentido para o tema; adapte a estrutura ao cenário real.
+
+### ESTRUTURA ESPERADA DO MARKDOWN (skill.md), quando skillData for gerado:
 
 1. **Frontmatter YAML Completo**:
-   O markdown gerado DEVE iniciar com um bloco frontmatter YAML contendo:
    ---
    title: "Título da Skill"
-   description: "Breve descrição operacional de 1 linha."
+   description: "Breve descrição operacional de 1 linha, precisa e discriminante."
    accepts_files: true ou false (com base no contexto de uso de arquivos)
    supported_formats: ["pdf", "image"] (se accepts_files for true)
    trigger: webhook ou cron("expressão") ou null
@@ -1224,13 +1245,13 @@ Para que a Skill gerada seja profissional, rica e sob medida para o tema do usu�
    ---
 
 2. **Princípios Centrais ou Regras de Ouro**:
-   Mapeie as regras fundamentais de comportamento, tom de voz e diretrizes cruciais que orientam o Agente de IA especificamente nesta Skill.
+   Mapeie as regras fundamentais de comportamento, tom de voz e diretrizes cruciais, explicando o racional de cada uma.
 
 3. **Fluxo Operacional ou Conversacional Passo a Passo**:
-   Detone a dinâmica da conversa ou o processo de análise detalhadamente, etapa por etapa ou turno a turno (explicando o que o agente deve perguntar primeiro, como validar a resposta e como estruturar os relatórios de saída ou feedbacks finais). Apresente estruturas detalhadas de outputs ou tabelas apenas se forem pertinentes ao tema.
+   Detalhe a dinâmica da conversa ou o processo de análise etapa por etapa ou turno a turno (o que o agente pergunta primeiro, como valida a resposta, como estrutura relatórios ou feedbacks finais), com pelo menos um exemplo concreto de entrada/saída. Apresente tabelas ou estruturas de output apenas se forem pertinentes ao tema.
 
 4. **Diretrizes e Restrições ("O que esta Skill NUNCA faz")**:
-   Escreva restrições estritas e limitações críticas (ex: nunca inferir dados que o usuário não passou, alertar sobre termos ilegíveis para revisão humana, não dar notas ou pareceres como absolutos se requererem validação profissional).
+   Escreva restrições e limitações críticas com o motivo por trás delas (ex: nunca inferir dados que o usuário não passou, alertar sobre termos ilegíveis para revisão humana, não emitir pareceres como absolutos quando exigirem validação profissional).
 
 5. **Ações Locais e Integrações (Se aplicável)**:
    Se o tema envolver cálculos ou scripts locais em \`/tools\`, detalhe o papel das ferramentas Python e como executá-las.`;
@@ -2596,8 +2617,17 @@ app.post('/api/agent/auto-tune', async (req, res) => {
     }
 
     const systemInstruction = `Você é um Engenheiro de Prompt de IA Sênior especializado em playbooks de instruções cognitivas.
-Sua missão é ler o playbook markdown atual de uma Skill de IA, analisar a falha cometida na conversa e o feedback do usuário.
-Você deve reescrever as instruções do playbook markdown (mantendo todo o YAML frontmatter e estrutura de seções originais) adicionando diretrizes rígidas nas seções pertinentes (como nos Gotchas ou Checkpoints de QA) para mitigar o erro.
+Sua missão é ler o playbook markdown atual de uma Skill de IA, analisar a falha cometida na conversa e o feedback do usuário, e reescrever o playbook para que esse tipo de erro pare de acontecer.
+
+### COMO PENSAR SOBRE A CORREÇÃO (evite overfitting)
+Esta Skill será usada muitas vezes, em conversas que você nunca vai ver. O erro relatado é só UM exemplo de um padrão mais amplo — sua correção deve mirar no padrão, não no exemplo literal.
+- NÃO simplesmente empilhe mais uma regra rígida em caixa alta no final dos Gotchas/QA a cada rodada de feedback. Isso é overfitting: o playbook vira uma lista infinita de patches específicos, cada vez mais difícil de seguir, e que não generaliza para a próxima falha parecida (mas não idêntica).
+- Primeiro, generalize a causa raiz: por que o agente errou? Foi ambiguidade em uma instrução existente? Falta de um exemplo concreto? Uma suposição indevida? Trate a causa, não o sintoma.
+- Prefira EDITAR e esclarecer uma instrução já existente (explicando o porquê/risco por trás dela) a simplesmente ANEXAR uma regra nova. Só adicione uma regra nova quando realmente não houver nada relacionado a ajustar.
+- Mantenha o playbook enxuto: se a correção puder ser feita tornando uma frase existente mais clara ou adicionando um exemplo de entrada/saída, isso é preferível a crescer a lista de restrições.
+- Preserve tudo que já funciona; mude apenas o que é necessário para resolver a causa raiz identificada.
+
+Você deve reescrever as instruções do playbook markdown (mantendo todo o YAML frontmatter e estrutura de seções originais) aplicando o raciocínio acima nas seções pertinentes (como Princípios Centrais, Fluxo Operacional, Gotchas ou Checkpoints de QA).
 Responda estritamente com o novo conteúdo completo do playbook markdown editado. Não inclua blocos de código tipo \`\`\`markdown, retorne apenas o texto puro do markdown.`;
 
     const prompt = `=== PLAYBOOK ATUAL (skill.md) ===
